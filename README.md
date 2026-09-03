@@ -1,13 +1,13 @@
-# F1 Race Predictor — 2026 Season
+# F1 Race Modeling
 
-FastF1 + scikit-learn ile Formula 1 yarış sonuç tahmini.
+FastF1 verileri ve scikit-learn ile Formula 1 yarış sonucu modelleme çalışması.
 
 ## Özellikler
 - **Otomatik veri toplama** — FastF1 API'den 2023-2025 sezonlarının tüm verisi
-- **Manuel giriş yok** — sürücü listesi, takım isimleri, puan tablosu otomatik
+- **Veri yapılandırması** — geçmiş yarışlar API üzerinden alınır; 2026 grid bilgisi kodda tanımlıdır
 - **2026 grid** — 11 takım, 22 sürücü (Cadillac + Audi dahil)
-- **GradientBoosting** — RandomForest yerine daha güçlü model
-- **Herhangi bir yarış** — round belirtilerek geçmiş veya gelecek yarış tahmin edilebilir
+- **GradientBoosting** — kazanma sınıflandırması ve bitiş pozisyonu regresyonu
+- **Yarış seçimi** — CLI ile sezon ve round seçimi
 - **JSON çıktı** — web arayüzü için hazır
 
 ## Kurulum
@@ -65,3 +65,7 @@ python f1_predictor.py --year 2025 --round 12
 | Audi | Nico Hulkenberg | Gabriel Bortoleto |
 | Racing Bulls | Liam Lawson | Arvid Lindblad |
 | Cadillac | Sergio Perez | Valtteri Bottas |
+
+## Değerlendirme kapsamı
+
+Geçmiş bir yarış için çıktı üretmek tek başına out-of-sample test değildir. `TRAINING_YEARS` içindeki bir sezon hedeflendiğinde eğitim verisi hedef yarışın sonrasını da içerebilir. Tarih kesimi ve yarış bazında ayrılmış test seti doğrulanmadan tahmin çıktıları bir performans iddiası olarak kullanılmamalıdır.
