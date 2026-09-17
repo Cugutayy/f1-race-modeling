@@ -34,6 +34,7 @@ all = [
 [project.scripts]
 f1-research = "f1_research.cli:main"
 f1-live = "f1_research.openf1_live:main"
+f1-openf1-doctor = "f1_research.openf1_doctor:main"
 f1-laps = "f1_research.lap_pipeline:main"
 f1-laps-strict = "f1_research.strict_pipeline:main"
 f1-api = "f1_research.live_api:main"
