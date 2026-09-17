@@ -14,7 +14,15 @@ from f1_research.modern_models import (
     tune_forward_events,
 )
 from f1_research.plackett_luce import PlackettLuceRanker
-from f1_research.strategy import SimulationConfig, compare_pit_windows, predict_from_state
+from f1_research.strategy import (
+    DriverInput,
+    PaceOverride,
+    SimulationConfig,
+    compare_pit_windows,
+    drivers_from_state,
+    predict_from_state,
+    simulate,
+)
 
 
 def test_live_state_rejects_stale_driver_topic_and_keeps_recent_laps():
@@ -67,6 +75,38 @@ def test_live_simulation_is_coherent_deterministic_and_supports_pit_counterfactu
     assert len(scenarios) == 4
     assert {(row["pit_in_laps"], row["compound"]) for row in scenarios} == {
         (1, "SOFT"), (1, "HARD"), (3, "SOFT"), (3, "HARD")}
+
+
+def test_learned_pace_override_replaces_recent_pace_and_is_audited():
+    state = _live_state()
+    config = SimulationConfig(samples=1000, seed=3, safety_car_hazard_per_lap=0.0,
+                              dnf_hazard_per_lap=0.0)
+    overrides = {1: PaceOverride(88.25, 0.22, "strict_next_lap")}
+    drivers = drivers_from_state(state, config, overrides)
+    first = next(driver for driver in drivers if driver.driver_number == 1)
+    assert first.pace_s == pytest.approx(88.25)
+    assert first.pace_uncertainty_s == pytest.approx(0.22)
+    assert first.pace_source == "strict_next_lap"
+    report = predict_from_state(state, 24, config=config, pace_overrides=overrides)
+    assert report["audit"]["pace_sources"]["1"] == "strict_next_lap"
+    assert report["audit"]["pace_sources"]["2"] == "recent_laps"
+
+
+def test_current_compound_and_existing_tyre_age_are_not_double_counted():
+    drivers = [
+        DriverInput(1, "A", 1, 0.0, 90.0, 0.0, 0.10, 10, "SOFT", pace_source="test"),
+        DriverInput(2, "B", 2, 0.0, 90.0, 0.0, 0.10, 10, "HARD", pace_source="test"),
+    ]
+    config = SimulationConfig(
+        samples=1000,
+        seed=1,
+        lap_noise_s=0.0,
+        safety_car_hazard_per_lap=0.0,
+        dnf_hazard_per_lap=0.0,
+    )
+    results, _ = simulate(drivers, 1, config=config)
+    assert results[0].mean_remaining_time_s == pytest.approx(90.0)
+    assert results[1].mean_remaining_time_s == pytest.approx(90.0)
 
 
 def test_direct_plackett_luce_and_modern_core_models_produce_finite_scores():
