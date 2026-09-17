@@ -12,7 +12,7 @@ from .model_registry import load_manifest
 def _check_data_truth(path: Path) -> tuple[bool, str]:
     report = json.loads(path.read_text(encoding="utf-8"))
     events = report.get("events")
-    if report.get("schema_version") != 1 or not isinstance(events, list) or not events:
+    if report.get("matrix_schema_version") != 1 or not isinstance(events, list) or not events:
         return False, "invalid/empty data-truth matrix"
     failures = [e for e in events if e.get("verification_status") == "FAIL"]
     if failures:
