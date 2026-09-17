@@ -36,7 +36,7 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
             "date": "2026-03-08T05:00:00Z", "session_key": 1,
             "driver_number": 1, "position": 1,
         },
-    }) + "\\n")
+    }) + "\n")
     return truth, benchmark, manifest, model, replay
 
 
@@ -47,14 +47,14 @@ def test_production_gate_can_pass_complete_evidence(tmp_path):
 
 
 def test_production_gate_rejects_failed_real_audit(tmp_path):
-    truth, benchmark, manifest, model = _files(tmp_path, status="FAIL")
-    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model)
+    truth, benchmark, manifest, model, replay = _files(tmp_path, status="FAIL")
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, replay_capture=replay)
     assert result["production_ready"] is False
     assert result["checks"]["data_truth"]["passed"] is False
 
 
 def test_production_gate_rejects_tampered_model(tmp_path):
-    truth, benchmark, manifest, model = _files(tmp_path)
+    truth, benchmark, manifest, model, replay = _files(tmp_path)
     model.write_bytes(b"tampered")
     result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model)
     assert result["production_ready"] is False
