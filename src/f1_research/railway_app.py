@@ -12,7 +12,7 @@ from .live_api import app as live_app
 app: FastAPI = live_app
 
 
-@app.get("/railway-healthz", include_in_schema=False)
+@app.get("/railway_healthz", include_in_schema=False)
 def railway_healthz() -> dict[str, bool]:
     """Return process liveness only; do not expose race state or credentials."""
     return {"ok": True}
