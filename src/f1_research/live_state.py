@@ -1,7 +1,7 @@
 """Canonical event-time state for live and historical F1 streams.
 
 The rest of the project never needs to know whether observations arrived through
-OpenF1 REST, MQTT or a historical replay.  Every observation is merged with an
+OpenF1 REST, MQTT or a historical replay. Every observation is merged with an
 explicit timestamp and stale/out-of-order messages cannot overwrite newer state.
 """
 
@@ -58,6 +58,7 @@ class DriverState:
     stint_number: int | None = None
     tyre_age: int | None = None
     pit_stops: int = 0
+    last_pit_lap: int | None = None
     speed_kmh: float | None = None
     throttle_pct: float | None = None
     brake: bool | None = None
@@ -69,12 +70,19 @@ class DriverState:
     last_seen_at: str | None = None
     topic_times: dict[str, str] = field(default_factory=dict)
     recent_laps_s: list[float] = field(default_factory=list)
+    recent_lap_numbers: list[int] = field(default_factory=list)
 
-    def remember_lap(self, duration: float, keep: int = 8) -> None:
+    def remember_lap(self, lap: int | None, duration: float, keep: int = 8) -> None:
         if not np.isfinite(duration) or duration <= 0:
             return
+        if lap is not None and lap in self.recent_lap_numbers:
+            index = self.recent_lap_numbers.index(lap)
+            self.recent_laps_s[index] = float(duration)
+            return
         self.recent_laps_s.append(float(duration))
+        self.recent_lap_numbers.append(lap if lap is not None else -1)
         self.recent_laps_s = self.recent_laps_s[-keep:]
+        self.recent_lap_numbers = self.recent_lap_numbers[-keep:]
 
 
 @dataclass
@@ -120,7 +128,9 @@ class RaceState:
 class RaceStateStore:
     """Merge OpenF1 topic observations into one monotonic state snapshot."""
 
-    DRIVER_TOPICS = {"drivers", "position", "intervals", "laps", "stints", "pit", "car_data", "location"}
+    DRIVER_TOPICS = {
+        "drivers", "position", "intervals", "laps", "stints", "pit", "car_data", "location"
+    }
 
     def __init__(self, session_key: int | None = None):
         self.state = RaceState(session_key=session_key)
@@ -160,53 +170,56 @@ class RaceStateStore:
             self.state.session_name = payload.get("session_name") or self.state.session_name
             self.state.meeting_name = payload.get("location") or self.state.meeting_name
         elif topic == "drivers" and driver_number is not None:
-            d = self.state.driver(driver_number)
-            d.acronym = payload.get("name_acronym") or d.acronym
-            d.full_name = payload.get("full_name") or d.full_name
-            d.team_name = payload.get("team_name") or d.team_name
-            d.team_colour = payload.get("team_colour") or d.team_colour
+            driver = self.state.driver(driver_number)
+            driver.acronym = payload.get("name_acronym") or driver.acronym
+            driver.full_name = payload.get("full_name") or driver.full_name
+            driver.team_name = payload.get("team_name") or driver.team_name
+            driver.team_colour = payload.get("team_colour") or driver.team_colour
         elif topic == "position" and driver_number is not None:
             self.state.driver(driver_number).position = _integer(payload.get("position"))
         elif topic == "intervals" and driver_number is not None:
-            d = self.state.driver(driver_number)
-            d.gap_to_leader_s = _finite(payload.get("gap_to_leader"))
-            d.interval_s = _finite(payload.get("interval"))
+            driver = self.state.driver(driver_number)
+            driver.gap_to_leader_s = _finite(payload.get("gap_to_leader"))
+            driver.interval_s = _finite(payload.get("interval"))
         elif topic == "laps" and driver_number is not None:
-            d = self.state.driver(driver_number)
+            driver = self.state.driver(driver_number)
             lap = _integer(payload.get("lap_number"))
             duration = _finite(payload.get("lap_duration"))
-            d.lap_number = lap or d.lap_number
+            driver.lap_number = lap or driver.lap_number
             self.state.current_lap = max(self.state.current_lap or 0, lap or 0) or self.state.current_lap
-            d.last_lap_s = duration or d.last_lap_s
-            d.sector_1_s = _finite(payload.get("duration_sector_1"))
-            d.sector_2_s = _finite(payload.get("duration_sector_2"))
-            d.sector_3_s = _finite(payload.get("duration_sector_3"))
+            driver.last_lap_s = duration or driver.last_lap_s
+            driver.sector_1_s = _finite(payload.get("duration_sector_1"))
+            driver.sector_2_s = _finite(payload.get("duration_sector_2"))
+            driver.sector_3_s = _finite(payload.get("duration_sector_3"))
             if duration is not None and not payload.get("is_pit_out_lap", False):
-                d.remember_lap(duration)
+                driver.remember_lap(lap, duration)
         elif topic == "stints" and driver_number is not None:
-            d = self.state.driver(driver_number)
-            d.compound = payload.get("compound") or d.compound
-            d.stint_number = _integer(payload.get("stint_number")) or d.stint_number
+            driver = self.state.driver(driver_number)
+            driver.compound = payload.get("compound") or driver.compound
+            driver.stint_number = _integer(payload.get("stint_number")) or driver.stint_number
             start_age = _integer(payload.get("tyre_age_at_start"))
             lap_start = _integer(payload.get("lap_start"))
             lap_end = _integer(payload.get("lap_end")) or self.state.current_lap
             if start_age is not None and lap_start is not None and lap_end is not None:
-                d.tyre_age = max(0, start_age + lap_end - lap_start)
+                driver.tyre_age = max(0, start_age + lap_end - lap_start)
         elif topic == "pit" and driver_number is not None:
-            d = self.state.driver(driver_number)
-            d.pit_stops = max(d.pit_stops, _integer(payload.get("stop_number")) or d.pit_stops + 1)
+            driver = self.state.driver(driver_number)
+            pit_lap = _integer(payload.get("lap_number"))
+            if pit_lap is not None and pit_lap != driver.last_pit_lap:
+                driver.pit_stops += 1
+                driver.last_pit_lap = pit_lap
         elif topic == "car_data" and driver_number is not None:
-            d = self.state.driver(driver_number)
-            d.speed_kmh = _finite(payload.get("speed"))
-            d.throttle_pct = _finite(payload.get("throttle"))
+            driver = self.state.driver(driver_number)
+            driver.speed_kmh = _finite(payload.get("speed"))
+            driver.throttle_pct = _finite(payload.get("throttle"))
             brake = _integer(payload.get("brake"))
-            d.brake = None if brake is None else bool(brake)
-            d.rpm = _integer(payload.get("rpm"))
-            d.gear = _integer(payload.get("n_gear"))
-            d.drs = _integer(payload.get("drs"))
+            driver.brake = None if brake is None else bool(brake)
+            driver.rpm = _integer(payload.get("rpm"))
+            driver.gear = _integer(payload.get("n_gear"))
+            driver.drs = _integer(payload.get("drs"))
         elif topic == "location" and driver_number is not None:
-            d = self.state.driver(driver_number)
-            d.x, d.y = _finite(payload.get("x")), _finite(payload.get("y"))
+            driver = self.state.driver(driver_number)
+            driver.x, driver.y = _finite(payload.get("x")), _finite(payload.get("y"))
         elif topic == "weather":
             self.state.weather = WeatherState(
                 air_temperature_c=_finite(payload.get("air_temperature")),
@@ -228,9 +241,9 @@ class RaceStateStore:
                 self.state.safety_car = payload.get("message") or self.state.safety_car
 
         if driver_number is not None:
-            d = self.state.driver(driver_number)
-            d.last_seen_at = at.isoformat()
-            d.topic_times[topic] = at.isoformat()
+            driver = self.state.driver(driver_number)
+            driver.last_seen_at = at.isoformat()
+            driver.topic_times[topic] = at.isoformat()
         return True
 
     def ingest_many(self, topic: str, rows: list[dict[str, Any]]) -> int:
