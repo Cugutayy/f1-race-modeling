@@ -1,0 +1,86 @@
+name: Temporary OpenF1 optional evidence fixup v2
+
+on:
+  push:
+    branches:
+      - audit/openf1-evidence-contract-v2
+    paths:
+      - .github/workflows/openf1-evidence-contract-fixup-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/openf1-evidence-contract-v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Preserve unavailable optional evidence without hiding HTTP failures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_once(
+              'src/f1_research/openf1_live.py',
+              '''        response = self.session.get(url, timeout=self.timeout_s)\n        response.raise_for_status()\n        retrieved_at = datetime.now(UTC).isoformat()\n        raw_bytes = response.content\n        payload = response.json()\n        if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):\n            raise ValueError(f"Unexpected OpenF1 response for {endpoint}")\n        self.provenance.append({\n            "provider": "OpenF1",\n            "endpoint": endpoint,\n            "url": response.url or url,\n            "retrieved_at": retrieved_at,\n            "sha256": hashlib.sha256(raw_bytes).hexdigest(),\n            "row_count": len(payload),\n            "http_status": int(response.status_code),\n        })\n        return payload\n''',
+              '''        response = self.session.get(url, timeout=self.timeout_s)\n        retrieved_at = datetime.now(UTC).isoformat()\n        raw_bytes = response.content\n        try:\n            payload = response.json()\n        except ValueError:\n            payload = None\n        self.provenance.append({\n            "provider": "OpenF1",\n            "endpoint": endpoint,\n            "url": response.url or url,\n            "retrieved_at": retrieved_at,\n            "sha256": hashlib.sha256(raw_bytes).hexdigest(),\n            "row_count": len(payload) if isinstance(payload, list) else None,\n            "http_status": int(response.status_code),\n        })\n        response.raise_for_status()\n        if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):\n            raise ValueError(f"Unexpected OpenF1 response for {endpoint}")\n        return payload\n''',
+          )
+
+          replace_once(
+              'src/f1_research/provider_reconciliation.py',
+              '''    meetings = client.get("meetings", meeting_key=meeting_key)\n    if len(meetings) != 1:\n        raise ValueError("OpenF1 reconciliation expected exactly one meeting")\n    return {\n        "session": sessions[0],\n        "meeting": meetings[0],\n        "session_result": client.get("session_result", session_key=int(session_key)),\n        "drivers": client.get("drivers", session_key=int(session_key)),\n        "laps": client.get("laps", session_key=int(session_key)),\n        "pit": client.get("pit", session_key=int(session_key)),\n        "starting_grid": client.get("starting_grid", session_key=int(session_key)),\n        "provenance": list(client.provenance),\n    }\n''',
+              '''    meetings = client.get("meetings", meeting_key=meeting_key)\n    if len(meetings) != 1:\n        raise ValueError("OpenF1 reconciliation expected exactly one meeting")\n\n    optional_collection_errors: dict[str, dict[str, Any]] = {}\n    try:\n        starting_grid = client.get("starting_grid", session_key=int(session_key))\n    except Exception as exc:\n        status = getattr(getattr(exc, "response", None), "status_code", None)\n        if status != 404:\n            raise\n        starting_grid = None\n        optional_collection_errors["starting_grid"] = {\n            "error_type": type(exc).__name__,\n            "http_status": int(status),\n            "message": str(exc),\n        }\n\n    return {\n        "session": sessions[0],\n        "meeting": meetings[0],\n        "session_result": client.get("session_result", session_key=int(session_key)),\n        "drivers": client.get("drivers", session_key=int(session_key)),\n        "laps": client.get("laps", session_key=int(session_key)),\n        "pit": client.get("pit", session_key=int(session_key)),\n        "starting_grid": starting_grid,\n        "optional_collection_errors": optional_collection_errors,\n        "provenance": list(client.provenance),\n    }\n''',
+          )
+
+          p = Path('tests/test_openf1_client_provenance.py')
+          text = p.read_text(encoding='utf-8')
+          text += '''\n\nclass _FakeNotFoundResponse:\n    def __init__(self):\n        self.content = b'{"detail":"No results found."}'\n        self.url = "https://api.openf1.org/v1/starting_grid?session_key=9693"\n        self.status_code = 404\n\n    def raise_for_status(self):\n        import requests\n        raise requests.HTTPError("404 Client Error", response=self)\n\n    def json(self):\n        return {"detail": "No results found."}\n\n\ndef test_openf1_http_failure_is_hashed_before_raise(monkeypatch):\n    import pytest\n    import requests\n\n    client = OpenF1Client()\n    response = _FakeNotFoundResponse()\n    monkeypatch.setattr(client.session, "get", lambda *_args, **_kwargs: response)\n\n    with pytest.raises(requests.HTTPError):\n        client.get("starting_grid", session_key=9693)\n\n    assert client.provenance[-1]["endpoint"] == "starting_grid"\n    assert client.provenance[-1]["http_status"] == 404\n    assert client.provenance[-1]["row_count"] is None\n    assert client.provenance[-1]["sha256"] == hashlib.sha256(response.content).hexdigest()\n'''
+          p.write_text(text, encoding='utf-8')
+
+          p = Path('tests/test_provider_reconciliation.py')
+          text = p.read_text(encoding='utf-8')
+          text += '''\n\ndef test_collect_openf1_raw_keeps_missing_starting_grid_as_unknown(monkeypatch):\n    import requests\n\n    import f1_research.provider_reconciliation as module\n\n    class Response:\n        status_code = 404\n\n    class FakeClient:\n        def __init__(self):\n            self.provenance = []\n\n        def get(self, endpoint, **filters):\n            if endpoint == "sessions":\n                return [{"session_key": 9693, "meeting_key": 1254, "session_name": "Race"}]\n            if endpoint == "meetings":\n                return [{"meeting_key": 1254}]\n            if endpoint == "starting_grid":\n                raise requests.HTTPError("404 Client Error", response=Response())\n            return []\n\n    monkeypatch.setattr(module, "OpenF1Client", FakeClient)\n    raw = module.collect_openf1_raw(9693)\n\n    assert raw["starting_grid"] is None\n    assert raw["optional_collection_errors"]["starting_grid"]["http_status"] == 404\n'''
+          p.write_text(text, encoding='utf-8')
+          PY
+      - name: Install project dependencies
+        run: python -m pip install -r requirements-lock.txt && python -m pip install -e . --no-deps
+      - name: Targeted lint and tests
+        run: |
+          ruff check src/f1_research/openf1_live.py src/f1_research/provider_reconciliation.py tests/test_openf1_client_provenance.py tests/test_provider_reconciliation.py
+          pytest -q tests/test_openf1_client_provenance.py tests/test_provider_event_identity.py tests/test_provider_reconciliation.py tests/test_provider_reconciliation_semantics.py tests/test_provider_reconciliation_position_semantics.py tests/test_provider_audit.py tests/test_provider_audit_semantics_v2.py
+      - name: Real Australia OpenF1 collector smoke
+        run: |
+          python - <<'PY'
+          from f1_research.provider_reconciliation import collect_openf1_raw
+          raw = collect_openf1_raw(9693)
+          assert raw["session"]["session_key"] == 9693
+          assert raw["meeting"]["meeting_key"] == 1254
+          assert raw["starting_grid"] is None
+          err = raw["optional_collection_errors"].get("starting_grid")
+          assert err and err["http_status"] == 404
+          provenance = raw["provenance"]
+          assert any(p["endpoint"] == "starting_grid" and p["http_status"] == 404 for p in provenance)
+          assert all(p.get("sha256") and p.get("retrieved_at") and p.get("url") for p in provenance)
+          print({"requests": len(provenance), "starting_grid": raw["starting_grid"], "optional_errors": raw["optional_collection_errors"]})
+          PY
+      - name: Commit verified source changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/f1_research/openf1_live.py src/f1_research/provider_reconciliation.py tests/test_openf1_client_provenance.py tests/test_provider_reconciliation.py
+          git commit -m "Keep unavailable OpenF1 optional evidence explicit" || exit 0
+          git push origin HEAD:audit/openf1-evidence-contract-v2
