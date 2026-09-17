@@ -7,8 +7,9 @@ from fastapi import HTTPException
 from f1_research import live_api
 
 
-def _state(updated_at: str | None = None):
+def _state(updated_at: str | None = None, provider_event_at: str | None = None):
     updated_at = updated_at or datetime.now(UTC).isoformat()
+    provider_event_at = provider_event_at or updated_at
     drivers = []
     for number, pace, gap in ((1, 89.90, 0.0), (2, 90.10, 2.4), (3, 90.30, 5.1)):
         drivers.append({
@@ -27,8 +28,10 @@ def _state(updated_at: str | None = None):
         "session_name": "Race",
         "current_lap": 5,
         "updated_at": updated_at,
+        "latest_provider_event_at": provider_event_at,
         "rejected_stale_messages": 2,
         "rejected_provider_order_messages": 1,
+        "rejected_invalid_timestamp_messages": 0,
         "drivers": drivers,
     }
 
@@ -96,6 +99,8 @@ def gateway_files(tmp_path, monkeypatch):
     monkeypatch.setenv("F1_STRICT_MODEL_PATH", str(tmp_path / "missing-model.joblib"))
     monkeypatch.setenv("F1_STRATEGY_PRIORS_PATH", str(tmp_path / "missing-priors.json"))
     monkeypatch.setenv("F1_MODEL_EVIDENCE_PATH", str(tmp_path / "model_evidence.json"))
+    monkeypatch.setenv("F1_MAX_LIVE_AGE_S", "20")
+    monkeypatch.setenv("F1_REQUIRE_LIVE_STREAM", "1")
     monkeypatch.delenv("F1_API_TOKEN", raising=False)
     live_api._artifact_cache["key"] = None
     live_api._artifact_cache["value"] = None
@@ -118,11 +123,68 @@ def test_live_report_has_coherent_fallback_probabilities(gateway_files):
     assert report["pace_status"] == "fallback_recent_laps"
     assert report["pace_model"]["status"] == "fallback_recent_laps"
     assert report["state"]["session_key"] == 99
+    assert report["data_truth"]["status"] == "trusted_live"
     predictions = report["predictions"]
     assert len(predictions) == 3
     assert sum(row["win_probability"] for row in predictions) == pytest.approx(1.0)
     assert sum(row["podium_probability"] for row in predictions) == pytest.approx(3.0)
     assert report["strategy_prior_source"]["source"] == "built_in_defaults"
+
+
+def test_live_report_rejects_stale_provider_event_even_when_file_is_fresh(gateway_files):
+    state_path = gateway_files[0]
+    now = datetime.now(UTC)
+    state_path.write_text(
+        json.dumps(_state(
+            updated_at=now.isoformat(),
+            provider_event_at=(now - timedelta(seconds=60)).isoformat(),
+        )),
+        encoding="utf-8",
+    )
+    with pytest.raises(HTTPException) as exc:
+        live_api._live_report(total_laps=12, samples=1000)
+    assert exc.value.status_code == 503
+    assert "stale" in str(exc.value.detail).lower()
+
+
+def test_live_report_rejects_disconnected_or_stale_stream(gateway_files):
+    manifest_path = gateway_files[2]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["stream"]["connection_state"] = "reconnecting"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(HTTPException) as exc:
+        live_api._live_report(total_laps=12, samples=1000)
+    assert exc.value.status_code == 503
+    assert "not connected" in str(exc.value.detail).lower()
+
+
+def test_live_report_rejects_missing_gap_instead_of_fabricating_one(gateway_files):
+    state_path = gateway_files[0]
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["drivers"][1]["gap_to_leader_s"] = None
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(HTTPException) as exc:
+        live_api._live_report(total_laps=12, samples=1000)
+    assert exc.value.status_code == 503
+    assert "gap_to_leader_s" in str(exc.value.detail)
+
+
+def test_live_and_strategy_reject_unknown_tyre_state(gateway_files):
+    state_path = gateway_files[0]
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["drivers"][1]["compound"] = None
+    state["drivers"][1]["tyre_age"] = None
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(HTTPException) as live_exc:
+        live_api._live_report(total_laps=12, samples=1000)
+    assert live_exc.value.status_code == 503
+    assert "compound" in str(live_exc.value.detail)
+    assert "tyre_age" in str(live_exc.value.detail)
+
+    with pytest.raises(HTTPException) as strategy_exc:
+        live_api.strategy(driver_number=1, total_laps=12, samples=1000, _=None)
+    assert strategy_exc.value.status_code == 503
 
 
 def test_telemetry_tail_filters_driver_and_ignores_malformed_lines(gateway_files):
@@ -143,15 +205,19 @@ def test_healthz_exposes_transport_state_and_evidence_availability(gateway_files
     assert payload["current_lap"] == 5
     assert payload["connection_state"] == "connected"
     assert payload["live_stream_healthy"] is True
-    assert payload["last_message_age_s"] <= 15
+    assert payload["trusted_live_ready"] is True
+    assert payload["trusted_live_error"] is None
+    assert payload["provider_event_age_s"] <= 20
+    assert payload["last_message_age_s"] <= 20
     assert payload["connect_count"] == 2
     assert payload["disconnect_count"] == 1
     assert payload["capture_rows"] == 1234
     assert payload["rejected_stale_messages"] == 2
     assert payload["rejected_provider_order_messages"] == 1
+    assert payload["rejected_invalid_timestamp_messages"] == 0
 
 
-def test_healthz_does_not_call_stale_transport_healthy(gateway_files):
+def test_healthz_does_not_call_stale_transport_trusted_live(gateway_files):
     manifest_path = gateway_files[2]
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["stream"]["last_message_at"] = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
@@ -160,6 +226,8 @@ def test_healthz_does_not_call_stale_transport_healthy(gateway_files):
     assert payload["connection_state"] == "connected"
     assert payload["last_message_age_s"] >= 59
     assert payload["live_stream_healthy"] is False
+    assert payload["trusted_live_ready"] is False
+    assert "fresh messages" in payload["trusted_live_error"]
 
 
 def test_evidence_endpoint_returns_valid_sealed_artifact(gateway_files):
