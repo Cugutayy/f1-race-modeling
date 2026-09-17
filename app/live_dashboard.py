@@ -13,9 +13,11 @@ import pandas as pd
 import streamlit as st
 
 from f1_research.strategy import SimulationConfig, compare_pit_windows, predict_from_state
+from f1_research.strategy_calibration import load_simulation_config
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
+DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-intelligence" / "strategy_priors.json"
 
 
 def read_json(path: Path) -> dict:
@@ -35,6 +37,16 @@ def state_age_seconds(state: dict) -> float:
         return float("inf")
     now = pd.Timestamp(datetime.now(UTC))
     return max(0.0, float((now - updated).total_seconds()))
+
+
+def simulation_config(path: Path, samples: int) -> tuple[SimulationConfig, dict]:
+    if not path.exists():
+        return SimulationConfig(samples=samples), {
+            "source": "built_in_defaults",
+            "warning": "No empirical strategy_priors.json found; pit/SC/DNF priors are defaults.",
+        }
+    config, payload = load_simulation_config(path, samples=samples)
+    return config, {"source": str(path), **payload}
 
 
 def recent_telemetry(path: Path, driver_number: int, max_rows: int = 1400) -> pd.DataFrame:
@@ -172,6 +184,8 @@ def main() -> None:
     with st.sidebar:
         state_path = Path(st.text_input(
             "State file", os.environ.get("F1_LIVE_STATE_PATH", str(DEFAULT_STATE))))
+        priors_path = Path(st.text_input(
+            "Strategy priors", os.environ.get("F1_STRATEGY_PRIORS_PATH", str(DEFAULT_PRIORS))))
         total_laps = st.number_input("Race total laps", min_value=2, max_value=100, value=57, step=1)
         samples = st.select_slider(
             "Live simulation samples", options=[2000, 4000, 8000, 12000, 20000], value=4000)
@@ -184,9 +198,10 @@ def main() -> None:
     def live_view():
         try:
             state = read_json(state_path)
+            sim_config, prior_audit = simulation_config(priors_path, int(samples))
         except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-            st.warning(f"Live state unavailable: {exc}")
-            st.code("python -m f1_research.openf1_live capture --output reports/local/live")
+            st.warning(f"Live input unavailable: {exc}")
+            st.code("f1-live capture --output reports/local/live")
             return
 
         age = state_age_seconds(state)
@@ -198,12 +213,13 @@ def main() -> None:
         d.metric("Messages", state.get("received_messages", 0))
         if age > max(10, refresh * 4):
             st.warning("State is stale. Predictions below are frozen until the capture receives new data.")
+        if prior_audit.get("source") == "built_in_defaults":
+            st.warning("Strategy priors are defaults. Run f1-laps to calibrate pit-loss and SC priors from history.")
 
         predictions = None
         report = None
         try:
-            report = predict_from_state(
-                state, int(total_laps), config=SimulationConfig(samples=int(samples)))
+            report = predict_from_state(state, int(total_laps), config=sim_config)
             predictions = report["predictions"]
         except ValueError as exc:
             st.info(f"Simulation warm-up: {exc}")
@@ -288,16 +304,15 @@ def main() -> None:
             else:
                 mapping = dict(drivers)
                 chosen = st.selectbox("Driver", list(mapping), key="strategy_driver")
-                scenario_key = (state.get("updated_at"), mapping[chosen], int(total_laps), int(samples))
+                scenario_key = (
+                    state.get("updated_at"), mapping[chosen], int(total_laps), int(samples),
+                    sim_config.pit_loss_mean_s, sim_config.safety_car_hazard_per_lap,
+                )
                 if st.button("Run pit-window comparison", type="primary"):
                     with st.spinner("Running common-seed strategy scenarios…"):
                         try:
                             scenarios = compare_pit_windows(
-                                state,
-                                int(total_laps),
-                                mapping[chosen],
-                                config=SimulationConfig(samples=int(samples)),
-                            )
+                                state, int(total_laps), mapping[chosen], config=sim_config)
                             st.session_state.strategy_result = scenarios
                             st.session_state.strategy_result_key = scenario_key
                         except ValueError as exc:
@@ -320,22 +335,18 @@ def main() -> None:
                     scenario_chart = alt.Chart(table).mark_line(point=True).encode(
                         x=alt.X("pit_in_laps:Q", title="Pit in laps from now"),
                         y=alt.Y(
-                            "expected_position:Q",
-                            title="Expected finish",
-                            scale=alt.Scale(reverse=True),
-                        ),
+                            "expected_position:Q", title="Expected finish", scale=alt.Scale(reverse=True)),
                         color="compound:N",
                         tooltip=[
-                            "compound:N",
-                            "pit_in_laps:Q",
+                            "compound:N", "pit_in_laps:Q",
                             alt.Tooltip("expected_position:Q", format=".2f"),
                             alt.Tooltip("win_probability:Q", format=".1%"),
                         ],
                     ).properties(height=300)
                     st.altair_chart(scenario_chart, width="stretch")
                     st.caption(
-                        "Counterfactual sensitivity analysis: lower expected position is better. "
-                        "Defaults must be validated circuit-by-circuit before stronger claims.")
+                        "Counterfactual sensitivity analysis. Pit-loss and SC priors use historical public "
+                        "data when strategy_priors.json is available; DNF remains an explicit fallback prior.")
 
         with audit:
             st.json({
@@ -348,6 +359,7 @@ def main() -> None:
                     "rejected_stale_messages": state.get("rejected_stale_messages"),
                 },
                 "simulation": report.get("audit") if report else None,
+                "strategy_prior_artifact": prior_audit,
             }, expanded=False)
             st.warning(
                 "Missing team-only variables (fuel, setup, carcass/internal tyre temperatures, full sensor "
