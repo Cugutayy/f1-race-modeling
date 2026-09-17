@@ -20,7 +20,7 @@ jobs:
       matrix:
         event:
           - {year: 2023, round: 3, session_key: 7787}
-          - {year: 2024, round: 6, session_key: 9673}
+          - {year: 2024, round: 5, session_key: 9673}
           - {year: 2024, round: 9, session_key: 9531}
           - {year: 2024, round: 14, session_key: 9574}
           - {year: 2024, round: 21, session_key: 9636}
