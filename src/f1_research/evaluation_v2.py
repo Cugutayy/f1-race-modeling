@@ -16,6 +16,7 @@ from .features import FEATURES, build_features
 from .model import distribution, estimator, probability, score_event
 from .modern_models import candidate_specs, fit_selected, tune_forward_events
 from .plackett_luce import PlackettLuceRanker
+from .rank_ensemble import blend_scores, tune_rank_ensemble
 
 TEMPERATURES = np.geomspace(0.02, 3.0, 45)
 
@@ -41,14 +42,13 @@ def _select_temperature(events: list[pd.DataFrame], score_fn) -> float:
     return float(TEMPERATURES[int(np.argmin(losses))])
 
 
-def _tune_pl(frame: pd.DataFrame, tuning_events: int, min_fit_events: int,
-             l2_values=(0.5, 2.0, 5.0, 15.0, 50.0)) -> tuple[float, pd.DataFrame]:
-    """Tune PL regularization on winner log loss from walk-forward tuning events.
-
-    The tuning temperature is optimized on the same designated tuning block solely to
-    compare L2 candidates. It is discarded afterwards; the selected final PL model is
-    recalibrated on the later, disjoint outer calibration block.
-    """
+def _tune_pl(
+    frame: pd.DataFrame,
+    tuning_events: int,
+    min_fit_events: int,
+    l2_values=(0.5, 2.0, 5.0, 15.0, 50.0),
+) -> tuple[float, pd.DataFrame]:
+    """Tune PL regularization on winner log loss from walk-forward tuning events."""
     events = frame[["event_id", "date"]].drop_duplicates().sort_values(["date", "event_id"])
     tune_ids = events.iloc[-tuning_events:].event_id.tolist()
     rows = []
@@ -71,7 +71,11 @@ def _tune_pl(frame: pd.DataFrame, tuning_events: int, min_fit_events: int,
                 tuning_frames[str(event_id)] = target
             if not predicted:
                 raise ValueError("PL candidate had no eligible tuning events")
-            ordered_frames = [tuning_frames[str(event_id)] for event_id in tune_ids if str(event_id) in predicted]
+            ordered_frames = [
+                tuning_frames[str(event_id)]
+                for event_id in tune_ids
+                if str(event_id) in predicted
+            ]
             temperature = _select_temperature(
                 ordered_frames,
                 lambda event: predicted[str(event.event_id.iloc[0])],
@@ -113,8 +117,13 @@ def _tune_pl(frame: pd.DataFrame, tuning_events: int, min_fit_events: int,
     return float(valid.iloc[0].l2), table.reset_index(drop=True)
 
 
-def _split_blocks(features: pd.DataFrame, test_events: int, tuning_events: int,
-                  calibration_events: int, min_fit_events: int) -> dict[str, list[str]]:
+def _split_blocks(
+    features: pd.DataFrame,
+    test_events: int,
+    tuning_events: int,
+    calibration_events: int,
+    min_fit_events: int,
+) -> dict[str, list[str]]:
     events = features[["event_id", "date"]].drop_duplicates().sort_values(["date", "event_id"])
     required = min_fit_events + tuning_events + calibration_events + test_events
     if len(events) < required:
@@ -129,12 +138,46 @@ def _split_blocks(features: pd.DataFrame, test_events: int, tuning_events: int,
     return {"fit": fit, "tuning": tuning, "calibration": calibration, "test": test}
 
 
-def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: int = 6,
-                 calibration_events: int = 4, min_fit_events: int = 20,
-                 modern_names: tuple[str, ...] = ("hist_gradient_boosting", "extra_trees"),
-                 max_specs_per_model: int = 4,
-                 modern_selection_metric: str = "winner_log_loss",
-                 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+def _tune_ensemble(
+    pre_cal: pd.DataFrame,
+    modern_spec,
+    pl_l2: float,
+    tuning_events: int,
+    min_fit_events: int,
+) -> tuple[dict[str, float], pd.DataFrame]:
+    """Walk-forward component predictions; weights see only the designated tuning block."""
+    events = pre_cal[["event_id", "date"]].drop_duplicates().sort_values(["date", "event_id"])
+    tune_ids = events.iloc[-tuning_events:].event_id.tolist()
+    predictions: list[tuple[pd.DataFrame, dict[str, np.ndarray]]] = []
+    for event_id in tune_ids:
+        target = pre_cal[pre_cal.event_id == event_id]
+        train = pre_cal[pre_cal.date < target.date.min()]
+        if train.event_id.nunique() < min_fit_events:
+            continue
+        modern = fit_selected(train, modern_spec)
+        pl = PlackettLuceRanker(l2=pl_l2).fit(train)
+        predictions.append((target, {
+            "modern": np.asarray(modern.predict(target[FEATURES]), dtype=float),
+            "pl": np.asarray(pl.predict(target), dtype=float),
+            "qualifying": _baseline_scores("qualifying_order", target),
+        }))
+    if not predictions:
+        raise ValueError("No eligible tuning events for rank ensemble")
+    return tune_rank_ensemble(predictions, step=0.25)
+
+
+def benchmark_v2(
+    frame: pd.DataFrame,
+    *,
+    test_events: int = 12,
+    tuning_events: int = 6,
+    calibration_events: int = 4,
+    min_fit_events: int = 20,
+    modern_names: tuple[str, ...] = ("hist_gradient_boosting", "extra_trees"),
+    max_specs_per_model: int = 4,
+    modern_selection_metric: str = "winner_log_loss",
+    include_ensemble: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     features = build_features(validate(frame))
     split = _split_blocks(features, test_events, tuning_events, calibration_events, min_fit_events)
     pre_cal_ids = split["fit"] + split["tuning"]
@@ -162,6 +205,26 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
         / (pre_cal.groupby("event_id").driver.transform("size") - 1).clip(lower=1),
     )
 
+    ensemble_weights: dict[str, float] | None = None
+    ensemble_table = pd.DataFrame()
+    if include_ensemble:
+        ensemble_weights, ensemble_table = _tune_ensemble(
+            pre_cal,
+            modern_best,
+            pl_l2,
+            tuning_events,
+            min_fit_events,
+        )
+
+    def ensemble_scores(event: pd.DataFrame) -> np.ndarray:
+        if ensemble_weights is None:
+            raise ValueError("Ensemble is disabled")
+        return blend_scores({
+            "modern": np.asarray(modern_model.predict(event[FEATURES]), dtype=float),
+            "pl": np.asarray(pl_model.predict(event), dtype=float),
+            "qualifying": _baseline_scores("qualifying_order", event),
+        }, ensemble_weights)
+
     score_functions = {
         "qualifying_order": lambda event: _baseline_scores("qualifying_order", event),
         "recent_form": lambda event: _baseline_scores("recent_form", event),
@@ -169,6 +232,9 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
         f"modern::{modern_best.name}": lambda event: modern_model.predict(event[FEATURES]),
         "plackett_luce_mle": lambda event: pl_model.predict(event),
     }
+    if include_ensemble:
+        score_functions["rank_ensemble"] = ensemble_scores
+
     calibration_events_frames = [group for _, group in calibration.groupby("event_id", sort=True)]
     temperatures = {
         name: _select_temperature(calibration_events_frames, fn)
@@ -181,12 +247,21 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
             scores = np.asarray(score_fn(event), dtype=float)
             measured, ranks = score_event(event, scores, temperatures[name])
             probs = distribution(scores, temperatures[name], samples=8192, seed=42)
-            metrics.append({"event_id": event_id, "date": str(event.date.iloc[0]), "model": name,
-                            "temperature": temperatures[name], **measured})
+            metrics.append({
+                "event_id": event_id,
+                "date": str(event.date.iloc[0]),
+                "model": name,
+                "temperature": temperatures[name],
+                **measured,
+            })
             for i, (_, row) in enumerate(event.iterrows()):
                 predictions.append({
-                    "event_id": event_id, "date": str(row.date), "driver": row.driver,
-                    "team": row.team, "model": name, "actual_position": int(row.finish_position),
+                    "event_id": event_id,
+                    "date": str(row.date),
+                    "driver": row.driver,
+                    "team": row.team,
+                    "model": name,
+                    "actual_position": int(row.finish_position),
                     "predicted_position": int(ranks[i]),
                     **{key: float(value[i]) for key, value in probs.items()},
                 })
@@ -202,20 +277,35 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
         "pl_selection_metric": "winner_log_loss",
         "pl_tuning_temperature_is_final": False,
         "pl_tuning": pl_table.replace({np.inf: None, -np.inf: None}).to_dict("records"),
+        "ensemble_enabled": include_ensemble,
+        "ensemble_weights": ensemble_weights,
+        "ensemble_selection_metric": "winner_log_loss" if include_ensemble else None,
+        "ensemble_tuning_temperature_is_final": False if include_ensemble else None,
+        "ensemble_tuning": (
+            ensemble_table.replace({np.inf: None, -np.inf: None}).to_dict("records")
+            if include_ensemble
+            else []
+        ),
         "temperatures": temperatures,
         "pl_optimization": pl_model.optimization_,
         "feature_schema": FEATURES,
         "test_updates_model": False,
         "selection_note": (
-            "Tuning-block temperatures compare hyperparameters only; all final model temperatures "
-            "are re-estimated on the disjoint calibration block."
+            "Tuning-block temperatures and ensemble weights compare candidates only; all final model "
+            "temperatures are re-estimated on the disjoint calibration block."
         ),
     }
     return pd.DataFrame(metrics), pd.DataFrame(predictions), audit
 
 
-def save_v2_report(frame: pd.DataFrame, metrics: pd.DataFrame, predictions: pd.DataFrame,
-                   audit: dict[str, Any], output: Path, provenance: dict[str, Any] | None = None) -> dict[str, Any]:
+def save_v2_report(
+    frame: pd.DataFrame,
+    metrics: pd.DataFrame,
+    predictions: pd.DataFrame,
+    audit: dict[str, Any],
+    output: Path,
+    provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     summary = metrics.groupby("model", sort=True)[
@@ -223,17 +313,21 @@ def save_v2_report(frame: pd.DataFrame, metrics: pd.DataFrame, predictions: pd.D
     ].mean().reset_index()
     canonical = validate(frame).to_csv(index=False)
     report = {
-        "schema_version": 2, "series": "f1", "data_kind": "historical",
+        "schema_version": 2,
+        "series": "f1",
+        "data_kind": "historical",
         "run_id": hashlib.sha256((canonical + predictions.to_csv(index=False)).encode()).hexdigest()[:16],
-        "summary": summary.to_dict("records"), "metrics": metrics.to_dict("records"),
-        "predictions": predictions.to_dict("records"), "audit": audit,
+        "summary": summary.to_dict("records"),
+        "metrics": metrics.to_dict("records"),
+        "predictions": predictions.to_dict("records"),
+        "audit": audit,
         "provenance": provenance or {"provider": "user-supplied; verify source manifest"},
         "limitations": [
             "This benchmark uses retrospective source snapshots unless provenance proves as-published availability.",
-            "The sealed test block is not used for model, hyperparameter or temperature selection.",
+            "The sealed test block is not used for model, hyperparameter, ensemble-weight or temperature selection.",
             "Tuning-block log loss is used for model selection and is not reported as sealed performance evidence.",
             "Public data does not expose full team telemetry, fuel load, setup or tyre internal temperatures.",
-            "A foundation model is a challenger, not automatically preferred over simpler baselines.",
+            "A foundation model or ensemble is a challenger, not automatically preferred over simpler baselines.",
         ],
     }
     (output / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
