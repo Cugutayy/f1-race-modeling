@@ -1,0 +1,132 @@
+name: Temporary provider identity patch
+
+on:
+  push:
+    branches:
+      - audit/provider-event-identity
+    paths:
+      - .github/workflows/provider-event-identity-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/provider-event-identity
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply fail-closed event identity integration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_once(
+              'src/f1_research/provider_reconciliation.py',
+              'from .openf1_live import OpenF1Client\n',
+              'from .openf1_live import OpenF1Client\nfrom .provider_event_identity import build_event_identity, require_event_identity\n',
+          )
+          replace_once(
+              'src/f1_research/provider_reconciliation.py',
+              '''    if str(sessions[0].get("session_name") or "").lower() != "race":\n        raise ValueError("OpenF1 session_key is not a Race session")\n    return {\n        "session": sessions[0],\n        "session_result": client.get("session_result", session_key=int(session_key)),\n''',
+              '''    if str(sessions[0].get("session_name") or "").lower() != "race":\n        raise ValueError("OpenF1 session_key is not a Race session")\n    meeting_key = _positive_int(sessions[0].get("meeting_key"))\n    if meeting_key is None:\n        raise ValueError("OpenF1 Race session has no valid meeting_key")\n    meetings = client.get("meetings", meeting_key=meeting_key)\n    if len(meetings) != 1:\n        raise ValueError("OpenF1 reconciliation expected exactly one meeting")\n    return {\n        "session": sessions[0],\n        "meeting": meetings[0],\n        "session_result": client.get("session_result", session_key=int(session_key)),\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_reconciliation.py',
+              '''    event_meta = {\n        "EventName": str(event.get("EventName")),\n        "RoundNumber": int(event.get("RoundNumber")),\n        "EventDate": str(event.get("EventDate")),\n    }\n''',
+              '''    event_meta = {\n        "EventName": str(event.get("EventName")),\n        "RoundNumber": int(event.get("RoundNumber")),\n        "EventDate": str(event.get("EventDate")),\n        "Country": str(event.get("Country")),\n        "Location": str(event.get("Location")),\n    }\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_reconciliation.py',
+              '''    _write_json(raw_dir / "jolpica.json", jolpica)\n    _write_json(raw_dir / "openf1.json", openf1)\n    _write_json(raw_dir / "fastf1.json", fastf1)\n\n    jolpica_rows, jolpica_meta = normalize_jolpica_results(\n''',
+              '''    _write_json(raw_dir / "jolpica.json", jolpica)\n    _write_json(raw_dir / "openf1.json", openf1)\n    _write_json(raw_dir / "fastf1.json", fastf1)\n\n    event_identity = build_event_identity(\n        year=year,\n        round_number=round_number,\n        openf1_session_key=openf1_session_key,\n        jolpica_raw=jolpica,\n        openf1_raw=openf1,\n        fastf1_raw=fastf1,\n    )\n    require_event_identity(event_identity)\n\n    jolpica_rows, jolpica_meta = normalize_jolpica_results(\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_reconciliation.py',
+              '''        "event_metadata": {\n            "jolpica": jolpica_meta,\n            "openf1": session,\n            "fastf1": fastf1["event"],\n        },\n''',
+              '''        "event_identity": event_identity,\n        "event_metadata": {\n            "jolpica": jolpica_meta,\n            "openf1_session": session,\n            "openf1_meeting": openf1["meeting"],\n            "fastf1": fastf1["event"],\n        },\n''',
+          )
+
+          replace_once(
+              'src/f1_research/provider_audit.py',
+              'from .provider_reconciliation import (\n',
+              'from .provider_event_identity import build_event_identity\nfrom .provider_reconciliation import (\n',
+          )
+          replace_once(
+              'src/f1_research/provider_audit.py',
+              '''        event = {\n            "EventName": str(raw_event.get("EventName")),\n            "RoundNumber": int(raw_event.get("RoundNumber")),\n            "EventDate": str(raw_event.get("EventDate")),\n        }\n''',
+              '''        event = {\n            "EventName": str(raw_event.get("EventName")),\n            "RoundNumber": int(raw_event.get("RoundNumber")),\n            "EventDate": str(raw_event.get("EventDate")),\n            "Country": str(raw_event.get("Country")),\n            "Location": str(raw_event.get("Location")),\n        }\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_audit.py',
+              '''    for provider, payload in raw.items():\n        _write_json(raw_dir / f"{provider.lower()}.json", payload)\n\n    normalized: dict[str, list[Any]] = {}\n''',
+              '''    for provider, payload in raw.items():\n        _write_json(raw_dir / f"{provider.lower()}.json", payload)\n\n    event_identity = build_event_identity(\n        year=year,\n        round_number=round_number,\n        openf1_session_key=openf1_session_key,\n        jolpica_raw=raw.get("Jolpica"),\n        openf1_raw=raw.get("OpenF1"),\n        fastf1_raw=raw.get("FastF1"),\n    )\n    if not event_identity["verified"]:\n        provider_errors.setdefault(\n            "event_identity",\n            "failed required checks: " + ", ".join(event_identity["failures"]),\n        )\n\n    normalized: dict[str, list[Any]] = {}\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_audit.py',
+              '''    if len(normalized) >= 2:\n        report = reconcile_results(normalized)\n''',
+              '''    if len(normalized) == 3 and event_identity["verified"]:\n        report = reconcile_results(normalized)\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_audit.py',
+              '''            "provider_errors": provider_errors,\n            "raw_sha256": {name: _json_sha256(value) for name, value in raw.items()},\n        })\n''',
+              '''            "provider_errors": provider_errors,\n            "event_identity": event_identity,\n            "event_metadata": event_identity["providers"],\n            "raw_sha256": {name: _json_sha256(value) for name, value in raw.items()},\n        })\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_audit.py',
+              '''    else:\n        report = _failure_report(\n            year=year,\n            round_number=round_number,\n            openf1_session_key=openf1_session_key,\n            provider_errors=provider_errors or {"audit": "fewer than two providers normalized"},\n            raw_snapshots=raw,\n        )\n\n    report["limitations"] = [\n''',
+              '''    else:\n        if len(normalized) != 3:\n            provider_errors.setdefault(\n                "audit",\n                f"expected three normalized providers, got {sorted(normalized)}",\n            )\n        report = _failure_report(\n            year=year,\n            round_number=round_number,\n            openf1_session_key=openf1_session_key,\n            provider_errors=provider_errors,\n            raw_snapshots=raw,\n        )\n        report["event_identity"] = event_identity\n        report["event_metadata"] = event_identity["providers"]\n\n    report["limitations"] = [\n''',
+          )
+          replace_once(
+              'src/f1_research/provider_audit.py',
+              '''        "Provider disagreements are never repaired by majority vote.",\n    ]\n''',
+              '''        "Provider disagreements are never repaired by majority vote.",\n        "Result comparison runs only after required same-event metadata checks pass across all three providers.",\n        "Location labels are retained but are not a hard identity key because provider locality semantics differ.",\n    ]\n''',
+          )
+
+          replace_once(
+              'tests/test_provider_audit_semantics_v2.py',
+              '''            "season": "2025", "round": "1", "raceName": "Audit GP", "date": "2025-03-16",\n            "Circuit": {"circuitId": "audit"},\n''',
+              '''            "season": "2025", "round": "1", "raceName": "Audit GP", "date": "2025-03-16",\n            "time": "04:00:00Z",\n            "Circuit": {"circuitId": "audit", "circuitName": "Audit Ring",\n                        "Location": {"locality": "Audit City", "country": "Australia"}},\n''',
+          )
+          replace_once(
+              'tests/test_provider_audit_semantics_v2.py',
+              '''        "session": {"session_key": 9693, "session_name": "Race", "year": 2025},\n        "session_result": [\n''',
+              '''        "session": {"session_key": 9693, "meeting_key": 1254, "session_name": "Race",\n                    "session_type": "Race", "year": 2025,\n                    "date_start": "2025-03-16T04:00:00+00:00",\n                    "country_name": "Australia", "location": "Audit City",\n                    "is_cancelled": False},\n        "meeting": {"meeting_key": 1254, "meeting_name": "Audit GP", "year": 2025,\n                    "country_name": "Australia", "location": "Audit City",\n                    "is_cancelled": False},\n        "session_result": [\n''',
+          )
+          replace_once(
+              'tests/test_provider_audit_semantics_v2.py',
+              '''        "provider": "FastF1", "fastf1_version": "test", "event": {"RoundNumber": 1},\n''',
+              '''        "provider": "FastF1", "fastf1_version": "test",\n        "event": {"EventName": "Audit GP", "RoundNumber": 1,\n                  "EventDate": "2025-03-16 00:00:00", "Country": "Australia",\n                  "Location": "Audit City"},\n''',
+          )
+          replace_once(
+              'tests/test_provider_audit_semantics_v2.py',
+              '''    assert report["insufficient_hard_count"] > 0\n    assert (output / "insufficient_hard_evidence.csv").exists()\n''',
+              '''    assert report["insufficient_hard_count"] > 0\n    assert report["event_identity"]["verified"] is True\n    assert report["event_metadata"]["OpenF1"]["event_name"] == "Audit GP"\n    assert (output / "insufficient_hard_evidence.csv").exists()\n''',
+          )
+          PY
+      - name: Install project test dependencies
+        run: python -m pip install -r requirements-lock.txt && python -m pip install -e . --no-deps
+      - name: Targeted lint and reconciliation tests
+        run: |
+          ruff check src/f1_research/provider_event_identity.py src/f1_research/provider_reconciliation.py src/f1_research/provider_audit.py tests/test_provider_event_identity.py tests/test_provider_audit.py tests/test_provider_audit_semantics_v2.py
+          pytest -q tests/test_provider_event_identity.py tests/test_provider_reconciliation.py tests/test_provider_reconciliation_semantics.py tests/test_provider_reconciliation_position_semantics.py tests/test_provider_audit.py tests/test_provider_audit_semantics_v2.py
+      - name: Commit verified source changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/f1_research/provider_event_identity.py src/f1_research/provider_reconciliation.py src/f1_research/provider_audit.py tests/test_provider_event_identity.py tests/test_provider_audit_semantics_v2.py
+          git commit -m "Fail closed on cross-provider event identity" || exit 0
+          git push origin HEAD:audit/provider-event-identity
