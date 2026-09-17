@@ -14,7 +14,7 @@ import pandas as pd
 from .data import validate
 from .features import FEATURES, build_features
 from .model import distribution, estimator, probability, score_event
-from .modern_models import CandidateSpec, fit_selected, tune_forward_events
+from .modern_models import candidate_specs, fit_selected, tune_forward_events
 from .plackett_luce import PlackettLuceRanker
 
 TEMPERATURES = np.geomspace(0.02, 3.0, 45)
@@ -96,8 +96,6 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
     calibration = features[features.event_id.isin(split["calibration"])].copy()
     test = features[features.event_id.isin(split["test"])].copy()
 
-    modern_specs = None
-    from .modern_models import candidate_specs
     modern_specs = candidate_specs(modern_names)
     modern_best, modern_table = tune_forward_events(
         pre_cal, specs=modern_specs, tuning_events=tuning_events,
@@ -107,9 +105,11 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
     pl_l2, pl_table = _tune_pl(pre_cal, tuning_events, min_fit_events)
     pl_model = PlackettLuceRanker(l2=pl_l2).fit(pre_cal)
 
-    ridge = estimator("ridge_rank").fit(pre_cal[FEATURES],
-                                         (pre_cal.finish_position - 1) /
-                                         (pre_cal.groupby("event_id").driver.transform("size") - 1).clip(lower=1))
+    ridge = estimator("ridge_rank").fit(
+        pre_cal[FEATURES],
+        (pre_cal.finish_position - 1)
+        / (pre_cal.groupby("event_id").driver.transform("size") - 1).clip(lower=1),
+    )
 
     score_functions = {
         "qualifying_order": lambda event: _baseline_scores("qualifying_order", event),
@@ -119,8 +119,10 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
         "plackett_luce_mle": lambda event: pl_model.predict(event),
     }
     calibration_events_frames = [group for _, group in calibration.groupby("event_id", sort=True)]
-    temperatures = {name: _select_temperature(calibration_events_frames, fn)
-                    for name, fn in score_functions.items()}
+    temperatures = {
+        name: _select_temperature(calibration_events_frames, fn)
+        for name, fn in score_functions.items()
+    }
 
     metrics, predictions = [], []
     for event_id, event in test.groupby("event_id", sort=True):
