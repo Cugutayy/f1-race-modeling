@@ -1,9 +1,16 @@
 name: Real provider matrix audit
 on:
+  workflow_dispatch:
   push:
     branches: [audit/real-race-matrix-v1]
+    paths:
+      - '.github/workflows/real-provider-matrix-audit.yml'
 permissions:
   contents: read
+concurrency:
+  group: real-provider-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   audit:
     runs-on: ubuntu-latest
