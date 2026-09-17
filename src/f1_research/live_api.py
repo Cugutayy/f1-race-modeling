@@ -27,6 +27,7 @@ DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
 DEFAULT_MODEL = ROOT / "reports" / "local" / "lap-strict" / "next_lap_strict.joblib"
 DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-strict" / "strategy_priors.json"
 MAX_STATE_BYTES = 20 * 1024 * 1024
+MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_TELEMETRY_TAIL_BYTES = 4 * 1024 * 1024
 
 app = FastAPI(title="F1 Race Intelligence API", version="1.0.0", docs_url="/docs")
@@ -45,6 +46,11 @@ def _state_path() -> Path:
 def _events_path() -> Path:
     configured = os.environ.get("F1_LIVE_EVENTS_PATH")
     return Path(configured).expanduser().resolve() if configured else _state_path().with_name("events.jsonl")
+
+
+def _manifest_path() -> Path:
+    configured = os.environ.get("F1_LIVE_MANIFEST_PATH")
+    return Path(configured).expanduser().resolve() if configured else _state_path().with_name("manifest.json")
 
 
 def _model_path() -> Path:
@@ -79,17 +85,33 @@ def _read_state() -> dict[str, Any]:
     return value
 
 
-def _state_age_s(state: dict[str, Any]) -> float | None:
-    raw = state.get("updated_at")
+def _read_capture_manifest() -> dict[str, Any]:
+    path = _manifest_path()
+    if not path.exists():
+        return {}
+    try:
+        if path.stat().st_size <= 0 or path.stat().st_size > MAX_MANIFEST_BYTES:
+            return {}
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _age_s(raw: Any) -> float | None:
     if not raw:
         return None
     try:
-        updated = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        observed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
         return None
-    if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=UTC)
-    return max(0.0, (datetime.now(UTC) - updated.astimezone(UTC)).total_seconds())
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - observed.astimezone(UTC)).total_seconds())
+
+
+def _state_age_s(state: dict[str, Any]) -> float | None:
+    return _age_s(state.get("updated_at"))
 
 
 def _load_artifact() -> dict[str, Any] | None:
@@ -234,6 +256,15 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
     model_path = _model_path()
     priors_path = _priors_path()
     state = _read_state() if state_path.exists() else {}
+    manifest = _read_capture_manifest()
+    stream = manifest.get("stream") if isinstance(manifest.get("stream"), dict) else {}
+    connection_state = stream.get("connection_state")
+    last_message_age_s = _age_s(stream.get("last_message_at"))
+    live_stream_healthy = bool(
+        connection_state == "connected"
+        and last_message_age_s is not None
+        and last_message_age_s <= 15.0
+    )
     return JSONResponse(_safe({
         "ok": state_path.exists(),
         "state_path": str(state_path),
@@ -242,6 +273,16 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
         "strategy_priors": priors_path.exists(),
         "session_key": state.get("session_key"),
         "current_lap": state.get("current_lap"),
+        "rejected_stale_messages": state.get("rejected_stale_messages", 0),
+        "rejected_provider_order_messages": state.get("rejected_provider_order_messages", 0),
+        "capture_rows": manifest.get("captured_rows"),
+        "capture_bytes": manifest.get("capture_bytes"),
+        "connection_state": connection_state,
+        "live_stream_healthy": live_stream_healthy,
+        "last_message_age_s": last_message_age_s,
+        "connect_count": stream.get("connect_count"),
+        "disconnect_count": stream.get("disconnect_count"),
+        "last_stream_error": stream.get("last_error"),
     }))
 
 
