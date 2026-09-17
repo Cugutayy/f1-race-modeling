@@ -3,7 +3,8 @@
 Only quantities supported by captured historical sources are calibrated here.
 Team-only fuel/setup/tyre-temperature information is never inferred. Reliability is
 estimated as a shrunk public-results survival prior, not a diagnosis of an individual
-car's current mechanical state.
+car's current mechanical state. Tyre priors are retrospective public-timing estimates,
+not physical tyre-energy or tyre-life measurements.
 """
 
 from __future__ import annotations
@@ -16,8 +17,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .reliability import as_payload, calibrate_reliability, records_from_raw
+from .reliability import as_payload as reliability_payload
+from .reliability import calibrate_reliability, records_from_raw
 from .strategy import SimulationConfig
+from .tyre_calibration import as_payload as tyre_payload
+from .tyre_calibration import calibrate_tyre_priors
 
 
 @dataclass(frozen=True)
@@ -160,6 +164,7 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
         reliability_records,
         pooled_fallback=dnf_hazard,
     )
+    tyre_model, tyre_audit = calibrate_tyre_priors(datasets)
 
     priors = StrategyPriors(
         pit_loss_mean_s=float(np.clip(pit_mean, 8.0, 45.0)),
@@ -181,13 +186,16 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
         "dnf_definition": "session_result.dnf failures over approximate car-lap risk intervals; DNS/DSQ excluded",
         "dnf_source": dnf_source,
         "reliability": reliability_audit,
-        "reliability_model": as_payload(reliability_model),
+        "reliability_model": reliability_payload(reliability_model),
+        "tyre": tyre_audit,
+        "tyre_model": tyre_payload(tyre_model),
         "source_files": source_files,
         "limitations": [
             "Pit lap excess is not identical to geometric pit-lane loss and remains traffic/condition dependent.",
             "SC/VSC event frequency is a historical prior, not a causal per-lap forecast for a specific circuit.",
             "Reliability hazards are public-results priors, not current mechanical-fault diagnoses.",
             "Team and driver reliability effects are hierarchically shrunk because DNF samples are sparse.",
+            "Tyre calibration is retrospective public timing, not physical tyre energy or a guaranteed tyre-life limit.",
         ],
     }
     return priors, audit
@@ -196,10 +204,12 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
 def save_strategy_priors(priors: StrategyPriors, audit: dict[str, Any], path: Path) -> dict[str, Any]:
     clean_audit = dict(audit)
     reliability = clean_audit.pop("reliability_model", None)
+    tyre = clean_audit.pop("tyre_model", None)
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "priors": asdict(priors),
         "reliability": reliability,
+        "tyre": tyre,
         "audit": clean_audit,
     }
     path = Path(path)
