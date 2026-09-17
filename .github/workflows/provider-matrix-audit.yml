@@ -1,0 +1,152 @@
+name: Provider truth matrix audit
+
+on:
+  push:
+    branches:
+      - audit/provider-matrix-2023-2026
+    paths:
+      - .github/workflows/provider-matrix-audit.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-truth-matrix-audit
+  cancel-in-progress: false
+
+jobs:
+  audit-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - name: Run completed-race truth matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/provider-matrix data/reconciliation-cache
+          cat > reports/provider-matrix/matrix.tsv <<'EOF'
+          2023-R01-bahrain|2023|1|7953
+          2023-R03-australia|2023|3|7787
+          2023-R13-netherlands|2023|13|9149
+          2023-R18-united-states|2023|18|9213
+          2024-R01-bahrain|2024|1|9472
+          2024-R05-china|2024|5|9673
+          2024-R08-monaco|2024|8|9523
+          2024-R09-canada|2024|9|9531
+          2024-R14-belgium|2024|14|9574
+          2024-R21-sao-paulo|2024|21|9636
+          2025-R01-australia|2025|1|9693
+          2025-R02-china|2025|2|9998
+          2025-R12-britain|2025|12|9947
+          2026-R01-australia|2026|1|11234
+          EOF
+          printf 'label,year,round,openf1_session_key,cli_exit_code\n' > reports/provider-matrix/run_status.csv
+          while IFS='|' read -r label year round session_key; do
+            echo "=== ${label}: year=${year} round=${round} session=${session_key} ==="
+            set +e
+            python -m f1_research.provider_audit \
+              --year "${year}" \
+              --round "${round}" \
+              --openf1-session-key "${session_key}" \
+              --cache data/reconciliation-cache \
+              --output "reports/provider-matrix/${label}"
+            rc=$?
+            set -e
+            printf '%s,%s,%s,%s,%s\n' "${label}" "${year}" "${round}" "${session_key}" "${rc}" >> reports/provider-matrix/run_status.csv
+          done < reports/provider-matrix/matrix.tsv
+      - name: Aggregate matrix without electing provider truth
+        run: |
+          python - <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+
+          root = Path('reports/provider-matrix')
+          rows = []
+          failures = []
+          for line in (root / 'matrix.tsv').read_text(encoding='utf-8').splitlines():
+              label, year, round_number, session_key = line.split('|')
+              report_path = root / label / 'reconciliation.json'
+              if not report_path.exists():
+                  failures.append(f'{label}: missing reconciliation.json')
+                  continue
+              report = json.loads(report_path.read_text(encoding='utf-8'))
+              identity = report.get('event_identity') or {}
+              if identity.get('verified') is not True:
+                  failures.append(f"{label}: identity not verified: {identity.get('failures')}")
+              mismatches = report.get('mismatches') or []
+              hard = [m for m in mismatches if m.get('severity') == 'hard']
+              rows.append({
+                  'label': label,
+                  'year': int(year),
+                  'round': int(round_number),
+                  'openf1_session_key': int(session_key),
+                  'identity_verified': identity.get('verified') is True,
+                  'verification_status': report.get('verification_status'),
+                  'passed': report.get('passed'),
+                  'hard_mismatch_count': report.get('hard_mismatch_count'),
+                  'warning_count': report.get('warning_count'),
+                  'insufficient_hard_count': report.get('insufficient_hard_count'),
+                  'insufficient_secondary_count': report.get('insufficient_secondary_count'),
+                  'provider_errors': report.get('provider_errors') or {},
+                  'row_counts': report.get('row_counts') or {},
+                  'hard_mismatches': hard,
+                  'raw_sha256': report.get('raw_sha256') or {},
+                  'normalized_sha256': report.get('normalized_sha256') or {},
+                  'event_metadata': report.get('event_metadata') or {},
+              })
+
+          summary = {
+              'schema_version': 1,
+              'kind': 'cross_provider_completed_race_matrix',
+              'event_count_requested': len((root / 'matrix.tsv').read_text(encoding='utf-8').splitlines()),
+              'event_count_reported': len(rows),
+              'identity_failure_count': len(failures),
+              'infrastructure_failures': failures,
+              'events': rows,
+              'policy': {
+                  'majority_vote': False,
+                  'provider_disagreement_is_not_repaired': True,
+                  'hard_mismatch_does_not_fail_matrix_infrastructure_job': True,
+                  'missing_report_or_event_identity_failure_fails_job': True,
+              },
+          }
+          (root / 'matrix_summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          fields = [
+              'label', 'year', 'round', 'openf1_session_key', 'identity_verified',
+              'verification_status', 'passed', 'hard_mismatch_count', 'warning_count',
+              'insufficient_hard_count', 'insufficient_secondary_count', 'provider_errors',
+              'row_counts', 'hard_mismatches',
+          ]
+          with (root / 'matrix_summary.csv').open('w', newline='', encoding='utf-8') as handle:
+              writer = csv.DictWriter(handle, fieldnames=fields)
+              writer.writeheader()
+              for row in rows:
+                  writer.writerow({
+                      key: json.dumps(row[key], sort_keys=True) if isinstance(row[key], (dict, list)) else row[key]
+                      for key in fields
+                  })
+          print(json.dumps({
+              'events': len(rows),
+              'identity_failures': failures,
+              'events_with_hard_mismatch': sum(bool(row['hard_mismatch_count']) for row in rows),
+              'total_hard_pairwise_mismatches': sum(int(row['hard_mismatch_count'] or 0) for row in rows),
+          }, indent=2))
+          if failures:
+              raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-truth-matrix-2023-2026
+          path: reports/provider-matrix
+          if-no-files-found: error
+          retention-days: 30
