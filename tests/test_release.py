@@ -3,9 +3,8 @@ import json
 import pandas as pd
 from sklearn.dummy import DummyRegressor
 
-from f1_research.features import FEATURES
-
 from f1_research import release as rel
+from f1_research.features import FEATURES
 from f1_research.model_registry import load_manifest
 
 
