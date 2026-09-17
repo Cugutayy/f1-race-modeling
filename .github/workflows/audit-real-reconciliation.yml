@@ -21,7 +21,52 @@ jobs:
           cache-dependency-path: requirements-lock.txt
       - run: python -m pip install -r requirements-lock.txt
       - run: python -m pip install -e . --no-deps
+      - name: Diagnose FastF1 result and lap evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import fastf1
+
+          out = Path('reports/provider-diagnostic')
+          cache = Path('data/reconciliation-cache/fastf1-diag')
+          out.mkdir(parents=True, exist_ok=True)
+          cache.mkdir(parents=True, exist_ok=True)
+          fastf1.Cache.enable_cache(str(cache))
+
+          for year, round_number, label in [(2025, 1, 'australia'), (2025, 16, 'monza')]:
+              payload = {'year': year, 'round': round_number, 'label': label, 'fastf1_version': fastf1.__version__}
+              session = fastf1.get_session(year, round_number, 'R')
+              try:
+                  session.load(telemetry=False, weather=False, messages=False)
+                  payload['load_call'] = 'returned'
+              except Exception as exc:
+                  payload['load_call'] = 'raised'
+                  payload['load_error'] = f'{type(exc).__name__}: {exc}'
+              try:
+                  results = session.results
+                  payload['results_available'] = results is not None and not results.empty
+                  payload['results_columns'] = [] if results is None else list(results.columns)
+                  payload['results'] = [] if results is None else json.loads(results.to_json(orient='records', date_format='iso'))
+              except Exception as exc:
+                  payload['results_available'] = False
+                  payload['results_error'] = f'{type(exc).__name__}: {exc}'
+              try:
+                  laps = session.laps
+                  payload['laps_available'] = laps is not None and not laps.empty
+                  payload['laps_columns'] = [] if laps is None else list(laps.columns)
+                  if laps is not None and not laps.empty:
+                      keep = [c for c in ('DriverNumber', 'LapNumber', 'PitInTime') if c in laps.columns]
+                      payload['lap_summary'] = json.loads(laps[keep].tail(50).to_json(orient='records', date_format='iso'))
+              except Exception as exc:
+                  payload['laps_available'] = False
+                  payload['laps_error'] = f'{type(exc).__name__}: {exc}'
+              (out / f'fastf1-{year}-r{round_number}-{label}.json').write_text(
+                  json.dumps(payload, indent=2, default=str), encoding='utf-8'
+              )
+          PY
       - name: Reconcile 2025 Australian Grand Prix
+        continue-on-error: true
         run: |
           python -m f1_research.provider_reconciliation \
             --year 2025 \
@@ -33,6 +78,6 @@ jobs:
         if: always()
         with:
           name: provider-reconciliation-2025-R1
-          path: reports/reconciliation
-          if-no-files-found: warn
+          path: reports
+          if-no-files-found: error
           retention-days: 30
