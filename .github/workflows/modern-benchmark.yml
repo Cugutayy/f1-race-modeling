@@ -13,6 +13,7 @@ on:
       - 'src/f1_research/rank_ensemble.py'
       - 'src/f1_research/evaluation_v2.py'
       - 'src/f1_research/benchmark_evidence.py'
+      - 'src/f1_research/model_evidence.py'
       - 'pyproject.toml'
       - '.github/workflows/modern-benchmark.yml'
 
@@ -59,6 +60,11 @@ jobs:
             --metrics reports/modern/benchmark/fold_metrics.csv \
             --output reports/modern/benchmark/evidence \
             --samples 10000
+      - name: Build deployable model evidence
+        run: |
+          python -m f1_research.model_evidence \
+            --benchmark-dir reports/modern/benchmark \
+            --output reports/modern/benchmark/model_evidence.json
       - name: Print sealed summary
         run: |
           cat reports/modern/benchmark/summary.csv
