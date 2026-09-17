@@ -75,9 +75,10 @@ def test_latency_does_not_permanently_drop_a_previous_lap():
     lap5 = frame[frame.lap_number == 5].iloc[0]
     lap6 = frame[frame.lap_number == 6].iloc[0]
     assert lap5.last_lap_s == 90
+    assert lap5.recent_variability_s < 1
     assert lap6.last_lap_s == 90
     assert lap6.recent_median_3_s == 90
-    assert 200 in [row[1] for row in [(pd.Timestamp(base), 200)]]
+    assert lap6.recent_variability_s > 40
     assert pd.Timestamp(base + timedelta(seconds=451)) <= lap6.forecast_at
 
 
