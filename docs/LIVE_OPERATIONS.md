@@ -1,0 +1,242 @@
+# Live Race Intelligence — Operations
+
+This document describes the production-shaped path. Streamlit apps remain useful for
+research/debugging, but the live deployment is intentionally split:
+
+```text
+OpenF1 REST bootstrap + MQTT stream
+        ↓
+persistent Python capture worker
+        ↓
+events.jsonl + state.json + manifest.json
+        ↓
+strict pace model + calibrated strategy priors
+        ↓
+FastAPI read-only gateway
+        ↓
+Vercel / Next.js web UI
+```
+
+The Vercel process does **not** own the MQTT connection, training jobs, raw provider
+files or model credentials.
+
+## 1. Install
+
+Core research environment:
+
+```bash
+python -m pip install -e ".[dev,live,api]"
+```
+
+Optional modern tabular challengers:
+
+```bash
+python -m pip install -e ".[modern]"
+```
+
+Optional local tabular foundation challenger:
+
+```bash
+python -m pip install -e ".[foundation]"
+```
+
+`TabICLv2` is a challenger only. It must win the same chronological benchmark as every
+other model before its result is treated as useful for this project.
+
+## 2. Verify the provider contract first
+
+Before training or a live session, verify that the provider still exposes the fields
+our adapters expect:
+
+```bash
+f1-openf1-doctor --session-key latest --output reports/local/openf1-doctor.json
+```
+
+To inspect returned car-data timestamp spacing for one driver:
+
+```bash
+f1-openf1-doctor \
+  --session-key latest \
+  --include-telemetry \
+  --telemetry-driver 1 \
+  --output reports/local/openf1-doctor.json
+```
+
+The telemetry cadence in this report is an observation from returned samples, not a
+provider SLA or a promise about end-to-end live latency.
+
+## 3. Train strict next-lap intelligence and strategy priors
+
+Historical collection stores immutable raw endpoint snapshots, including `intervals`
+for retrospective traffic calibration. Compound/stint fields remain excluded from the
+strict evidence-bearing next-lap model because historical stint publication time is
+not available.
+
+```bash
+f1-laps-strict \
+  --year 2026 \
+  --race-count 8 \
+  --output reports/local/lap-strict
+```
+
+Artifacts used by live inference:
+
+```text
+reports/local/lap-strict/next_lap_strict.joblib
+reports/local/lap-strict/strategy_priors.json
+```
+
+`strategy_priors.json` contains separately audited public-data priors for pit loss,
+Safety Car frequency, reliability, tyres and close-following traffic. These are not
+team-private engineering signals.
+
+## 4. Compare modern and local foundation models correctly
+
+The evidence-bearing pre-race benchmark is chronological and disjoint:
+
+```text
+fit → tuning → probability calibration → sealed test
+```
+
+Run modern tree challengers:
+
+```bash
+f1-research benchmark-v2 \
+  --input data/processed/history.csv \
+  --output reports/local/benchmark-v2 \
+  --models hist_gradient_boosting extra_trees xgboost lightgbm catboost
+```
+
+Include the optional local foundation challenger when installed:
+
+```bash
+f1-research benchmark-v2 \
+  --input data/processed/history.csv \
+  --output reports/local/benchmark-foundation \
+  --models hist_gradient_boosting extra_trees tabicl_v2
+```
+
+The benchmark also reports a rank ensemble challenger. Ensemble weights are chosen
+only on the tuning block; its final probability temperature is re-estimated on the
+later calibration block. Sealed test results never tune weights, hyperparameters or
+temperature.
+
+## 5. Live capture
+
+Configure OpenF1 live credentials using environment variables. Do not commit them.
+Depending on the account/provider setup, use a token or username/password:
+
+```bash
+export OPENF1_TOKEN="..."
+# or
+export OPENF1_USERNAME="..."
+export OPENF1_PASSWORD="..."
+```
+
+Start capture:
+
+```bash
+f1-live capture --session-key latest --output reports/local/live
+```
+
+Files:
+
+```text
+reports/local/live/events.jsonl   immutable replay log
+reports/local/live/state.json     atomic canonical state snapshot
+reports/local/live/manifest.json  hashes + stream/reconnect/freshness health
+```
+
+The capture writer hashes JSONL incrementally, batches multi-row MQTT payloads and
+records connection/reconnect state. REST bootstrap rows are canonicalized before both
+capture and state mutation, so the JSONL replay path can reproduce the same semantic
+state.
+
+Historical/recovery-only bootstrap without MQTT:
+
+```bash
+f1-live capture --session-key latest --output reports/local/live --no-stream
+```
+
+Replay a saved capture without network access:
+
+```bash
+f1-live replay \
+  --input reports/local/live/events.jsonl \
+  --output reports/local/replay
+```
+
+## 6. Start the read-only API
+
+```bash
+export F1_API_TOKEN="a-long-random-server-token"
+export F1_LIVE_STATE_PATH="$PWD/reports/local/live/state.json"
+export F1_LIVE_EVENTS_PATH="$PWD/reports/local/live/events.jsonl"
+export F1_LIVE_MANIFEST_PATH="$PWD/reports/local/live/manifest.json"
+export F1_STRICT_MODEL_PATH="$PWD/reports/local/lap-strict/next_lap_strict.joblib"
+export F1_STRATEGY_PRIORS_PATH="$PWD/reports/local/lap-strict/strategy_priors.json"
+
+f1-api
+```
+
+Useful endpoints:
+
+```text
+GET /healthz
+GET /v1/live?total_laps=57&samples=4000
+GET /v1/telemetry?driver_number=1&limit=500
+GET /v1/strategy?driver_number=1&total_laps=57&samples=4000
+```
+
+`/healthz` separates provider transport health from canonical-state freshness. Watch:
+
+- `connection_state`
+- `live_stream_healthy`
+- `last_message_age_s`
+- `state_age_s`
+- `connect_count` / `disconnect_count`
+- `last_stream_error`
+- rejected stale/provider-order message counters
+
+A connected MQTT socket with stale messages is not reported as a healthy live stream.
+
+## 7. Run capture + API in Docker
+
+Create a local `.env` that is **not committed**:
+
+```text
+OPENF1_TOKEN=...
+F1_API_TOKEN=...
+F1_API_PORT=8000
+```
+
+Then:
+
+```bash
+docker compose -f compose.live.yaml up --build -d
+```
+
+The two services share a persistent `live-data` volume. The API receives model files
+from the read-only local mount `reports/local/lap-strict`.
+
+## 8. Vercel / Next.js
+
+Deploy the `web/` directory as the Vercel project root. Configure server-side env vars:
+
+```text
+F1_BACKEND_URL=https://<persistent-python-worker>
+F1_BACKEND_TOKEN=<same value as F1_API_TOKEN>
+```
+
+The token is used only by Vercel route handlers and must never be exposed as a public
+`NEXT_PUBLIC_*` variable.
+
+## 9. Live evidence rules
+
+The UI should never silently promote a fallback into “AI live prediction”:
+
+- if the strict artifact is missing, pace uses the recent-lap fallback and says so;
+- if strategy priors are missing, simulation uses explicit built-in defaults and says so;
+- if the capture is stale or MQTT is reconnecting, the UI should show stale/delayed;
+- retrospective tyre/traffic calibration is not presented as team telemetry or causal tyre/aero physics;
+- sealed benchmark metrics remain separate from tuning and calibration metrics.
