@@ -217,6 +217,7 @@ def audit_completed_race(
                 raw["OpenF1"]["session_result"],
                 raw["OpenF1"]["drivers"],
                 raw["OpenF1"]["pit"],
+                raw["OpenF1"].get("starting_grid"),
             )
         except Exception as exc:
             provider_errors["OpenF1.normalize"] = f"{type(exc).__name__}: {exc}"

@@ -58,6 +58,7 @@ class OpenF1Client:
         self.token = token
         self.timeout_s = timeout_s
         self.session = requests.Session()
+        self.provenance: list[dict[str, Any]] = []
         retry = Retry(
             total=4,
             backoff_factor=0.75,
@@ -104,9 +105,20 @@ class OpenF1Client:
             url += "?" + urlencode(query)
         response = self.session.get(url, timeout=self.timeout_s)
         response.raise_for_status()
+        retrieved_at = datetime.now(UTC).isoformat()
+        raw_bytes = response.content
         payload = response.json()
         if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
             raise ValueError(f"Unexpected OpenF1 response for {endpoint}")
+        self.provenance.append({
+            "provider": "OpenF1",
+            "endpoint": endpoint,
+            "url": response.url or url,
+            "retrieved_at": retrieved_at,
+            "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            "row_count": len(payload),
+            "http_status": int(response.status_code),
+        })
         return payload
 
 

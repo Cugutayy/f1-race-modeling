@@ -296,9 +296,15 @@ def build_event_identity(
         checks,
         "not_cancelled",
         values=cancelled,
-        passed=not any(value is True for value in cancelled.values()),
+        passed=(
+            openf1.get("session_cancelled") is False
+            and openf1.get("meeting_cancelled") is False
+        ),
         required=True,
-        reason="A cancelled OpenF1 meeting/session cannot be reconciled as a completed race.",
+        reason=(
+            "OpenF1 meeting/session cancellation flags must both be explicitly observed False; "
+            "missing evidence is not treated as not-cancelled."
+        ),
     )
 
     normalized_locations = {

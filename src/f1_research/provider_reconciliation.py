@@ -46,8 +46,8 @@ FIELD_SEMANTICS = {
         "Raw provider status is retained for audit."
     ),
     "grid_position": (
-        "Jolpica/FastF1 starting-grid position when supplied. OpenF1 session_result has "
-        "no directly equivalent field in this reconciliation contract."
+        "Provider starting-grid position: Jolpica Results.grid, OpenF1 starting_grid.position, "
+        "and FastF1 Results.GridPosition. Missing rows remain UNKNOWN and are never zero-filled."
     ),
     "pit_stops": (
         "Count of provider pit-stop observations. Missing pit evidence stays UNKNOWN, "
@@ -255,6 +255,7 @@ def normalize_openf1_results(
     result_rows: list[dict[str, Any]],
     driver_rows: list[dict[str, Any]] | None = None,
     pit_rows: list[dict[str, Any]] | None = None,
+    starting_grid_rows: list[dict[str, Any]] | None = None,
 ) -> list[ResultRow]:
     if not isinstance(result_rows, list) or not result_rows:
         raise ValueError("OpenF1 session_result rows are empty")
@@ -265,6 +266,19 @@ def normalize_openf1_results(
         number = _positive_int(driver.get("driver_number"))
         if number is not None:
             lookup[number] = driver
+
+    grid_evidence = starting_grid_rows is not None
+    grid_lookup: dict[int, int] = {}
+    for raw in starting_grid_rows or []:
+        if not isinstance(raw, dict):
+            raise ValueError("OpenF1 starting-grid row must be an object")
+        number = _positive_int(raw.get("driver_number"))
+        position = _positive_int(raw.get("position"), allow_zero=True)
+        if number is None or position is None:
+            raise ValueError("OpenF1 starting-grid row has invalid driver_number/position")
+        if number in grid_lookup:
+            raise ValueError(f"OpenF1 starting-grid has duplicate driver_number {number}")
+        grid_lookup[number] = position
 
     pit_evidence = pit_rows is not None
     pit_keys: dict[int, set[tuple[Any, Any]]] = {}
@@ -290,7 +304,7 @@ def normalize_openf1_results(
             position=_positive_int(raw.get("position")),
             laps=_positive_int(raw.get("number_of_laps"), allow_zero=True),
             status_class=status_class,
-            grid_position=None,
+            grid_position=(grid_lookup.get(number) if grid_evidence else None),
             pit_stops=(len(pit_keys.get(number, set())) if pit_evidence else None),
             points=_finite_float(raw.get("points")),
             status_raw=status_class,
@@ -678,6 +692,8 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
         "drivers": client.get("drivers", session_key=int(session_key)),
         "laps": client.get("laps", session_key=int(session_key)),
         "pit": client.get("pit", session_key=int(session_key)),
+        "starting_grid": client.get("starting_grid", session_key=int(session_key)),
+        "provenance": list(client.provenance),
     }
 
 
@@ -760,6 +776,7 @@ def reconcile_completed_race(
         openf1["session_result"],
         openf1["drivers"],
         openf1["pit"],
+        openf1.get("starting_grid"),
     )
     fastf1_rows = normalize_fastf1_results(fastf1["results"], fastf1["laps"])
 
