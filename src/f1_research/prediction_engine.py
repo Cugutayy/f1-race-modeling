@@ -1,7 +1,6 @@
 """Prediction orchestration: trusted state -> simulation -> immutable evidence ledger."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -21,7 +20,8 @@ def forecast(*, state: dict[str, Any], total_laps: int, model_id: str,
         "session_key": state.get("session_key"),
         "current_lap": state.get("current_lap"),
         "state_sha256": sha256_json(state),
-        "exact_time_driver_numbers": getattr(audit, "exact_time_driver_numbers", None),
+        "simulation_eligible_drivers": audit.simulation_eligible_drivers,
+        "classification_only_drivers": audit.classification_only_drivers,
     }
     payload = {
         "session_key": state.get("session_key"),
