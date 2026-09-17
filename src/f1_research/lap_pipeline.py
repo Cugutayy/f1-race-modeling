@@ -21,6 +21,7 @@ from .lap_intelligence import (
 )
 from .lap_mixture import attach_regime_labels, fit_mixture
 from .openf1_live import OpenF1Client
+from .strategy_calibration import calibrate_strategy_priors, save_strategy_priors
 
 ENDPOINTS = ("laps", "stints", "weather", "pit", "race_control")
 
@@ -164,21 +165,29 @@ def run(year: int, count: int, output: Path, *, latency_s: float = 1.0,
     mixture_path = output / "next_lap_mixture.joblib"
     joblib.dump(mixture_artifact, mixture_path)
 
+    session_keys = [int(manifest["session_key"]) for manifest in manifests]
+    strategy_priors, strategy_audit = calibrate_strategy_priors(datasets, output / "raw", session_keys)
+    strategy_path = output / "strategy_priors.json"
+    strategy_payload = save_strategy_priors(strategy_priors, strategy_audit, strategy_path)
+
     result = {
         "schema_version": 2,
         "task": "next_lap_intelligence",
         "year": year,
-        "sessions": [manifest["session_key"] for manifest in manifests],
+        "sessions": session_keys,
         "selected_model": mixture_artifact["selected_regressor"],
         "mixture_summary": mixture_metrics.to_dict("records"),
         "mixture_audit": mixture_audit,
         "legacy_summary": legacy_metrics.to_dict("records"),
         "legacy_audit": legacy_audit,
+        "strategy_priors": strategy_payload,
         "artifacts": {
             "mixture": {"path": str(mixture_path),
                         "sha256": hashlib.sha256(mixture_path.read_bytes()).hexdigest()},
             "single_regressor": {"path": str(legacy_path),
                                  "sha256": hashlib.sha256(legacy_path.read_bytes()).hexdigest()},
+            "strategy_priors": {"path": str(strategy_path),
+                                "sha256": hashlib.sha256(strategy_path.read_bytes()).hexdigest()},
         },
         "created_at": datetime.now(UTC).isoformat(),
     }
@@ -217,7 +226,8 @@ def main(argv=None):
                  include_foundation=args.foundation, refresh=args.refresh)
     print(json.dumps({"selected_model": report["selected_model"],
                       "sessions": report["sessions"],
-                      "mixture_summary": report["mixture_summary"]}, indent=2))
+                      "mixture_summary": report["mixture_summary"],
+                      "strategy_priors": report["strategy_priors"]["priors"]}, indent=2))
 
 
 if __name__ == "__main__":
