@@ -22,13 +22,15 @@ def test_railway_entrypoint_reads_port_from_environment(monkeypatch):
         called["app"] = app
         called.update(kwargs)
 
+    for name in ("OPENF1_TOKEN", "OPENF1_USERNAME", "OPENF1_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PORT", "9123")
     monkeypatch.setattr(uvicorn, "run", fake_run)
 
     railway_app.main()
 
+    assert called.pop("app") is railway_app.app
     assert called == {
-        "app": "f1_research.railway_app:app",
         "host": "0.0.0.0",
         "port": 9123,
         "log_level": "info",
