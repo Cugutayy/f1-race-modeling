@@ -18,7 +18,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from .live_intelligence import combined_live_report, combined_pit_windows, load_strict_artifact
-from .strategy import SimulationConfig, predict_from_state
+from .reliability import reliability_overrides_from_state
+from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -182,18 +183,40 @@ def _telemetry(driver_number: int, limit: int) -> list[dict[str, Any]]:
 def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     state = _read_state()
     config, prior_audit = _simulation_config(samples)
+    reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
+    reliability_overrides = reliability_overrides_from_state(state, reliability_model)
     artifact = _load_artifact()
     try:
         if artifact is not None:
-            report = combined_live_report(state, total_laps, artifact, config=config)
+            report = combined_live_report(
+                state,
+                total_laps,
+                artifact,
+                config=config,
+                reliability_model=reliability_model,
+            )
             pace_status = "strict_model"
         else:
-            report = predict_from_state(state, total_laps, config=config)
+            report = predict_from_state(
+                state,
+                total_laps,
+                config=config,
+                dnf_hazard_overrides=reliability_overrides,
+            )
             report["pace_predictions"] = []
             report["pace_model"] = {
                 "task": None,
                 "status": "fallback_recent_laps",
                 "warning": "Strict model artifact is unavailable",
+            }
+            report["reliability_model"] = {
+                "enabled": bool(reliability_model and reliability_model.get("enabled")),
+                "override_drivers": sorted(reliability_overrides),
+                "source": (
+                    "hierarchical_public_results_survival"
+                    if reliability_overrides
+                    else "pooled_config_fallback"
+                ),
             }
             pace_status = "fallback_recent_laps"
     except ValueError as exc:
@@ -252,6 +275,8 @@ def strategy(
 ) -> JSONResponse:
     state = _read_state()
     config, prior_audit = _simulation_config(samples)
+    reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
+    reliability_overrides = reliability_overrides_from_state(state, reliability_model)
     artifact = _load_artifact()
     try:
         if artifact is not None:
@@ -261,16 +286,16 @@ def strategy(
                 driver_number,
                 artifact,
                 config=config,
+                reliability_model=reliability_model,
             )
             pace_status = "strict_model"
         else:
-            from .strategy import compare_pit_windows
-
             scenarios = compare_pit_windows(
                 state,
                 total_laps,
                 driver_number,
                 config=config,
+                dnf_hazard_overrides=reliability_overrides,
             )
             pace_status = "fallback_recent_laps"
     except ValueError as exc:
@@ -281,6 +306,11 @@ def strategy(
         "state_updated_at": state.get("updated_at"),
         "state_age_s": _state_age_s(state),
         "pace_status": pace_status,
+        "reliability_status": (
+            "hierarchical_public_results_survival"
+            if reliability_overrides
+            else "pooled_config_fallback"
+        ),
         "strategy_prior_source": prior_audit,
         "scenarios": scenarios,
     }))
