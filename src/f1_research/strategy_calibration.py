@@ -1,9 +1,9 @@
 """Empirical public-data priors for the transparent strategy simulator.
 
-Only quantities that can be supported by the captured historical sources are
-calibrated here. Team-only fuel/setup/tyre-temperature information is never inferred.
-DNF hazard remains an explicit fallback until classification data is collected under
-a dedicated contract.
+Only quantities supported by captured historical sources are calibrated here.
+Team-only fuel/setup/tyre-temperature information is never inferred. Reliability is
+an aggregate historical prior from official session-result fields, not a diagnosis of
+an individual car's future mechanical state.
 """
 
 from __future__ import annotations
@@ -28,8 +28,10 @@ class StrategyPriors:
     pit_observations: int
     safety_car_starts: int
     race_laps_observed: int
+    dnf_events: int
+    car_laps_observed: int
     sessions: tuple[int, ...]
-    dnf_source: str = "default_not_calibrated"
+    dnf_source: str
 
 
 def _read_rows(path: Path) -> list[dict[str, Any]]:
@@ -85,6 +87,30 @@ def _sc_start_count(rows: list[dict[str, Any]]) -> int:
     return len(seen)
 
 
+def _dnf_exposure(rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """Return DNF failures and approximate car-lap risk intervals.
+
+    DNS and DSQ are excluded because they are different processes. A DNF contributes
+    one extra risk interval after its last completed lap; finishers contribute their
+    completed laps. This is a pooled constant-hazard approximation.
+    """
+    failures = 0
+    exposure = 0
+    for row in rows:
+        if bool(row.get("dns")) or bool(row.get("dsq")):
+            continue
+        try:
+            laps = int(row.get("number_of_laps"))
+        except (TypeError, ValueError):
+            continue
+        if laps < 0:
+            continue
+        failed = bool(row.get("dnf"))
+        failures += int(failed)
+        exposure += laps + int(failed)
+    return failures, exposure
+
+
 def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
                               session_keys: list[int],
                               fallback: SimulationConfig | None = None) -> tuple[StrategyPriors, dict[str, Any]]:
@@ -95,20 +121,27 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
 
     total_laps = 0
     sc_starts = 0
+    dnf_events = 0
+    car_lap_exposure = 0
     source_files = []
     for session_key in session_keys:
         session_dir = Path(raw_root) / str(session_key)
         lap_rows = _read_rows(session_dir / "laps.json")
         control_rows = _read_rows(session_dir / "race_control.json")
+        result_rows = _read_rows(session_dir / "session_result.json")
         lap_numbers = [int(row["lap_number"]) for row in lap_rows
                        if isinstance(row.get("lap_number"), (int, float)) and row["lap_number"] > 0]
         if lap_numbers:
             total_laps += max(lap_numbers)
         sc_starts += _sc_start_count(control_rows)
+        failures, exposure = _dnf_exposure(result_rows)
+        dnf_events += failures
+        car_lap_exposure += exposure
         source_files.append({
             "session_key": session_key,
             "laps": str(session_dir / "laps.json"),
             "race_control": str(session_dir / "race_control.json"),
+            "session_result": str(session_dir / "session_result.json"),
         })
 
     if total_laps > 0 and sc_starts > 0:
@@ -118,33 +151,45 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
         sc_hazard = fallback.safety_car_hazard_per_lap
         sc_source = "fallback_insufficient_race_control_events"
 
+    if dnf_events >= 3 and car_lap_exposure >= 500:
+        dnf_hazard = float(np.clip(dnf_events / car_lap_exposure, 0.00005, 0.03))
+        dnf_source = "session_result_dnf_per_car_lap_exposure"
+    else:
+        dnf_hazard = fallback.dnf_hazard_per_lap
+        dnf_source = "fallback_insufficient_session_result_exposure"
+
     priors = StrategyPriors(
         pit_loss_mean_s=float(np.clip(pit_mean, 8.0, 45.0)),
         pit_loss_sd_s=float(np.clip(pit_sd, 0.5, 8.0)),
         safety_car_hazard_per_lap=sc_hazard,
-        dnf_hazard_per_lap=fallback.dnf_hazard_per_lap,
+        dnf_hazard_per_lap=dnf_hazard,
         pit_observations=len(pit_values),
         safety_car_starts=sc_starts,
         race_laps_observed=total_laps,
+        dnf_events=dnf_events,
+        car_laps_observed=car_lap_exposure,
         sessions=tuple(int(key) for key in session_keys),
+        dnf_source=dnf_source,
     )
     audit = {
         "pit_loss_definition": "pit target lap duration minus its prior five-lap median; pit-out laps excluded",
         "safety_car_definition": "race-control deployment/start messages divided by observed race laps",
         "safety_car_source": sc_source,
-        "dnf_hazard": "not calibrated in this dataset; explicit SimulationConfig fallback retained",
+        "dnf_definition": "session_result.dnf failures over approximate car-lap risk intervals; DNS/DSQ excluded",
+        "dnf_source": dnf_source,
         "source_files": source_files,
         "limitations": [
             "Pit lap excess is not identical to geometric pit-lane loss and remains traffic/condition dependent.",
             "SC/VSC event frequency is a historical prior, not a causal per-lap forecast for a specific circuit.",
-            "Priors are pooled across supplied sessions unless a circuit-specific dataset is supplied.",
+            "DNF hazard is pooled reliability history, not a car-specific mechanical-failure forecast.",
+            "Priors are pooled across supplied sessions unless a circuit/team-specific dataset is supplied.",
         ],
     }
     return priors, audit
 
 
 def save_strategy_priors(priors: StrategyPriors, audit: dict[str, Any], path: Path) -> dict[str, Any]:
-    payload = {"schema_version": 1, "priors": asdict(priors), "audit": audit}
+    payload = {"schema_version": 2, "priors": asdict(priors), "audit": audit}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")
