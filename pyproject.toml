@@ -39,6 +39,7 @@ f1-laps = "f1_research.lap_pipeline:main"
 f1-laps-strict = "f1_research.strict_pipeline:main"
 f1-api = "f1_research.scoped_live_api:main"
 f1-reconcile = "f1_research.provider_reconciliation:main"
+f1-production-check = "f1_research.production_check:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
