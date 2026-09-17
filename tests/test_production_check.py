@@ -14,7 +14,7 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     truth.write_text(json.dumps({"matrix_schema_version": 1, "events": [{"verification_status": status} for _ in range(12)]}))
     benchmark = tmp_path / "benchmark.json"
     benchmark.write_text(json.dumps({
-        "data_kind": "historical", "test_events": test_events,
+        "data_kind": "historical", "run_id": "sealed-1", "test_events": test_events,
         "predictions": [{"driver": "VER"}], "metrics": [{"position_mae": 1.0}],
         "audit": {"test_updates_model": False, "split": {
             "fit": ["E1"], "tuning": ["E2"], "calibration": ["E3"],
