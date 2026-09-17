@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from .data_truth import validate_simulation_observations
 from .tyre_calibration import DEFAULT_DEGRADATION, DEFAULT_PACE_DELTA, DEFAULT_PIT_AGE
 
 
@@ -156,26 +157,27 @@ def drivers_from_state(
     rows = snapshot.get("drivers", [])
     if not isinstance(rows, list):
         raise ValueError("state.drivers must be a list")
-    observed = []
+
+    missing = validate_simulation_observations(snapshot)
+    if missing:
+        details = "; ".join(
+            f"{driver}: {','.join(fields)}" for driver, fields in sorted(missing.items())
+        )
+        raise ValueError(f"Live state is incomplete for simulation: {details}")
+
+    result = []
     for row in rows:
         position = row.get("position")
         if not isinstance(position, int) or position < 1:
             continue
         driver_number = int(row["driver_number"])
-        gap = row.get("gap_to_leader_s")
-        gap = (
-            0.0
-            if position == 1
-            else float(gap)
-            if isinstance(gap, (int, float)) and np.isfinite(gap)
-            else None
-        )
+        gap = 0.0 if position == 1 else float(row["gap_to_leader_s"])
         laps = row.get("recent_laps_s") or []
         fallback = row.get("last_lap_s")
         try:
             pace, uncertainty, degradation = _robust_pace(laps, fallback)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise ValueError(f"Driver {driver_number} has no usable pace observation") from exc
         source = "recent_laps"
         override = pace_overrides.get(driver_number)
         if override is not None:
@@ -185,35 +187,26 @@ def drivers_from_state(
         dnf_hazard = float(dnf_hazard_overrides.get(driver_number, config.dnf_hazard_per_lap))
         if not np.isfinite(dnf_hazard) or not 0 <= dnf_hazard < 1:
             raise ValueError(f"Invalid DNF hazard for driver {driver_number}")
-        observed.append((row, position, gap, pace, uncertainty, degradation, source, dnf_hazard))
-    if len(observed) < 2:
-        raise ValueError("At least two drivers need position and pace observations")
-
-    known_gaps = [item[2] for item in observed if item[2] is not None]
-    step = max(
-        1.0,
-        float(np.median(np.diff(sorted(set(known_gaps))))) if len(set(known_gaps)) >= 2 else 2.0,
-    )
-    result = []
-    for row, position, gap, pace, uncertainty, degradation, source, dnf_hazard in observed:
-        if gap is None:
-            gap = step * (position - 1)
+        compound = str(row["compound"]).upper()
+        tyre_age = int(row["tyre_age"])
         result.append(
             DriverInput(
-                driver_number=int(row["driver_number"]),
-                label=row.get("acronym") or row.get("full_name") or str(row["driver_number"]),
+                driver_number=driver_number,
+                label=row.get("acronym") or row.get("full_name") or str(driver_number),
                 current_position=position,
-                gap_to_leader_s=max(0.0, float(gap)),
+                gap_to_leader_s=max(0.0, gap),
                 pace_s=pace,
                 pace_uncertainty_s=min(max(uncertainty, 0.15), 3.0),
                 degradation_s_per_lap=min(degradation, config.max_degradation_s_per_lap),
-                tyre_age=max(0, int(row.get("tyre_age") or 0)),
-                compound=str(row.get("compound") or "MEDIUM").upper(),
+                tyre_age=tyre_age,
+                compound=compound,
                 pit_stops=max(0, int(row.get("pit_stops") or 0)),
                 pace_source=source,
                 dnf_hazard_per_lap=dnf_hazard,
             )
         )
+    if len(result) < 2:
+        raise ValueError("At least two complete drivers are required for simulation")
     return sorted(result, key=lambda item: item.current_position)
 
 
@@ -355,8 +348,11 @@ def simulate(
 
     for driver in drivers:
         strategy = strategies.get(driver.driver_number)
+        next_compound = (strategy.next_compound if strategy else "MEDIUM").upper()
+        if next_compound not in config.compound_pace_delta_s:
+            raise ValueError(f"Unsupported strategy compound: {next_compound}")
         pit_offsets.append(strategy.pit_in_laps if strategy else _default_pit_offset(driver, config))
-        next_compounds.append((strategy.next_compound if strategy else "MEDIUM").upper())
+        next_compounds.append(next_compound)
 
     traffic_events = 0
     sc_samples_by_lap: dict[str, int] = {}
