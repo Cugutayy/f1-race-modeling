@@ -77,8 +77,14 @@ def _endpoint_report(
 
 
 def _telemetry_report(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
+    # OpenF1 emits ISO timestamps with mixed fractional-second precision. Pandas can
+    # otherwise infer the first row's exact format and coerce later sub-second rows to
+    # NaT (for example .250/.500/.750 after a whole-second first sample), inflating the
+    # measured cadence from 250 ms to 1000 ms. ``format="mixed"`` preserves those
+    # provider timestamps instead of silently dropping them.
     dates = pd.to_datetime(
         [row.get("date") for row in rows if row.get("date") is not None],
+        format="mixed",
         utc=True,
         errors="coerce",
     )
