@@ -6,6 +6,7 @@ from typing import Any
 
 from .data_truth import assert_trusted_live_state
 from .prediction_ledger import append_jsonl, make_record, sha256_json
+from .simulation_scope import annotate_simulation_report, split_simulation_scope
 from .strategy import SimulationConfig, predict_from_state
 
 
@@ -14,7 +15,9 @@ def forecast(*, state: dict[str, Any], total_laps: int, model_id: str,
              ledger_path: Path, samples: int = 20_000,
              max_age_s: float = 20.0) -> dict[str, Any]:
     audit = assert_trusted_live_state(state, max_age_s=max_age_s)
-    report = predict_from_state(state, total_laps, config=SimulationConfig(samples=samples))
+    simulation_state, classification_only = split_simulation_scope(state)
+    report = predict_from_state(simulation_state, total_laps, config=SimulationConfig(samples=samples))
+    annotate_simulation_report(report, classification_only)
     features = {
         "session_key": state.get("session_key"),
         "current_lap": state.get("current_lap"),
