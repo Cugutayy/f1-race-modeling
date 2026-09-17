@@ -12,11 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from .tyre_priors import (
-    DEFAULT_DEGRADATION_S_PER_LAP,
-    DEFAULT_PACE_DELTA_S,
-    DEFAULT_STINT_TARGET_LAPS,
-)
+from .tyre_calibration import DEFAULT_DEGRADATION, DEFAULT_PACE_DELTA, DEFAULT_PIT_AGE
 
 
 @dataclass(frozen=True)
@@ -32,13 +28,13 @@ class SimulationConfig:
     safety_car_pit_loss_multiplier: float = 0.58
     max_degradation_s_per_lap: float = 0.20
     compound_pace_delta_s: dict[str, float] = field(
-        default_factory=lambda: dict(DEFAULT_PACE_DELTA_S)
+        default_factory=lambda: dict(DEFAULT_PACE_DELTA)
     )
     compound_degradation_s_per_lap: dict[str, float] = field(
-        default_factory=lambda: dict(DEFAULT_DEGRADATION_S_PER_LAP)
+        default_factory=lambda: dict(DEFAULT_DEGRADATION)
     )
     compound_stint_target_laps: dict[str, float] = field(
-        default_factory=lambda: dict(DEFAULT_STINT_TARGET_LAPS)
+        default_factory=lambda: dict(DEFAULT_PIT_AGE)
     )
 
     def __post_init__(self):
