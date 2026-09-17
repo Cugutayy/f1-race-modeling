@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .lap_strict import STRICT_FEATURES, predict_live_strict
+from .reliability import reliability_overrides_from_state
 from .strategy import PaceOverride, SimulationConfig, compare_pit_windows, predict_from_state
 
 
@@ -58,14 +59,17 @@ def combined_live_report(
     total_laps: int,
     artifact: dict[str, Any],
     config: SimulationConfig | None = None,
+    reliability_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pace = predict_live_strict(artifact, snapshot)
-    overrides = pace_overrides_from_frame(pace, artifact)
+    pace_overrides = pace_overrides_from_frame(pace, artifact)
+    reliability_overrides = reliability_overrides_from_state(snapshot, reliability_model)
     race = predict_from_state(
         snapshot,
         total_laps,
         config=config,
-        pace_overrides=overrides,
+        pace_overrides=pace_overrides,
+        dnf_hazard_overrides=reliability_overrides,
     )
     race["pace_model"] = {
         "task": artifact.get("task"),
@@ -75,8 +79,13 @@ def combined_live_report(
         "sealed_test_session": artifact.get("sealed_test_session"),
         "conformal_alpha": artifact.get("conformal_alpha"),
         "conformal_radius_s": artifact.get("conformal_radius_s"),
-        "override_drivers": sorted(overrides),
+        "override_drivers": sorted(pace_overrides),
         "uncertainty_mapping": "conformal_radius / 1.645, clipped to [0.15, 3.0] seconds",
+    }
+    race["reliability_model"] = {
+        "enabled": bool(reliability_model and reliability_model.get("enabled")),
+        "override_drivers": sorted(reliability_overrides),
+        "source": "hierarchical_public_results_survival" if reliability_overrides else "pooled_config_fallback",
     }
     race["pace_predictions"] = pace.to_dict("records")
     return race
@@ -90,9 +99,11 @@ def combined_pit_windows(
     config: SimulationConfig | None = None,
     offsets: tuple[int, ...] = (1, 2, 3, 4, 5),
     compounds: tuple[str, ...] = ("SOFT", "MEDIUM", "HARD"),
+    reliability_model: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     pace = predict_live_strict(artifact, snapshot)
-    overrides = pace_overrides_from_frame(pace, artifact)
+    pace_overrides = pace_overrides_from_frame(pace, artifact)
+    reliability_overrides = reliability_overrides_from_state(snapshot, reliability_model)
     return compare_pit_windows(
         snapshot,
         total_laps,
@@ -100,5 +111,6 @@ def combined_pit_windows(
         offsets=offsets,
         compounds=compounds,
         config=config,
-        pace_overrides=overrides,
+        pace_overrides=pace_overrides,
+        dnf_hazard_overrides=reliability_overrides,
     )
