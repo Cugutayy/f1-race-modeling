@@ -7,13 +7,16 @@ quantity has an explicit default and can later be replaced by a learned model.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
 
-COMPOUND_LIFE = {"SOFT": 18, "MEDIUM": 28, "HARD": 40, "INTERMEDIATE": 25, "WET": 30}
-COMPOUND_PACE = {"SOFT": -0.35, "MEDIUM": 0.0, "HARD": 0.35, "INTERMEDIATE": 2.5, "WET": 5.0}
+from .tyre_priors import (
+    DEFAULT_DEGRADATION_S_PER_LAP,
+    DEFAULT_PACE_DELTA_S,
+    DEFAULT_STINT_TARGET_LAPS,
+)
 
 
 @dataclass(frozen=True)
@@ -28,12 +31,34 @@ class SimulationConfig:
     safety_car_gap_multiplier: float = 0.30
     safety_car_pit_loss_multiplier: float = 0.58
     max_degradation_s_per_lap: float = 0.20
+    compound_pace_delta_s: dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_PACE_DELTA_S)
+    )
+    compound_degradation_s_per_lap: dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_DEGRADATION_S_PER_LAP)
+    )
+    compound_stint_target_laps: dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_STINT_TARGET_LAPS)
+    )
 
     def __post_init__(self):
         if self.samples < 1000:
             raise ValueError("samples must be >= 1000 for stable scenario summaries")
         if not 0 <= self.dnf_hazard_per_lap < 1 or not 0 <= self.safety_car_hazard_per_lap < 1:
             raise ValueError("hazards must be probabilities in [0, 1)")
+        for name, mapping in (
+            ("compound_pace_delta_s", self.compound_pace_delta_s),
+            ("compound_degradation_s_per_lap", self.compound_degradation_s_per_lap),
+            ("compound_stint_target_laps", self.compound_stint_target_laps),
+        ):
+            if not isinstance(mapping, dict) or not mapping:
+                raise ValueError(f"{name} must be a non-empty mapping")
+            if any(not np.isfinite(float(value)) for value in mapping.values()):
+                raise ValueError(f"{name} contains a non-finite value")
+        if any(not 0 <= float(value) <= 0.5 for value in self.compound_degradation_s_per_lap.values()):
+            raise ValueError("compound degradation priors must be in [0, 0.5]")
+        if any(not 2 <= float(value) <= 80 for value in self.compound_stint_target_laps.values()):
+            raise ValueError("compound stint targets must be in [2, 80]")
 
 
 @dataclass(frozen=True)
@@ -185,16 +210,25 @@ def drivers_from_state(
     return sorted(result, key=lambda item: item.current_position)
 
 
-def _default_pit_offset(driver: DriverInput) -> int | None:
-    life = COMPOUND_LIFE.get(driver.compound, 28)
-    remaining = life - driver.tyre_age
-    return max(1, remaining) if remaining <= 12 else None
+def _compound_value(mapping: dict[str, float], compound: str, fallback: float) -> float:
+    value = mapping.get(str(compound).upper(), fallback)
+    return float(value) if np.isfinite(float(value)) else float(fallback)
 
 
-def _relative_compound_delta(start_compound: str, current_compound: str) -> float:
-    """Relative change only: current observed pace already contains the start tyre effect."""
-    start = COMPOUND_PACE.get(start_compound, 0.0)
-    current = COMPOUND_PACE.get(current_compound, 0.0)
+def _default_pit_offset(driver: DriverInput, config: SimulationConfig) -> int | None:
+    target = _compound_value(config.compound_stint_target_laps, driver.compound, 28.0)
+    remaining = target - driver.tyre_age
+    return max(1, int(np.ceil(remaining))) if remaining <= 12 else None
+
+
+def _relative_compound_delta(
+    start_compound: str,
+    current_compound: str,
+    config: SimulationConfig,
+) -> float:
+    """Relative fresh-tyre pace prior; current observed pace already includes wear."""
+    start = _compound_value(config.compound_pace_delta_s, start_compound, 0.0)
+    current = _compound_value(config.compound_pace_delta_s, current_compound, 0.0)
     return current - start
 
 
@@ -206,10 +240,11 @@ def simulate(
 ) -> tuple[list[SimulationResult], dict[str, Any]]:
     """Simulate coherent finishing orders from the current race state.
 
-    ``pace_s`` is the observed/modelled pace at the current tyre state. Therefore the
-    simulation adds only *future* ageing relative to that state. A pit stop resets tyre
-    age and applies the compound delta relative to the current compound; it does not
-    add the current compound effect twice.
+    ``pace_s`` is the observed/modelled pace at the current tyre state. Before a stop,
+    only additional ageing relative to the current tyre age is added. After a stop,
+    the simulator backs out a fresh-current-compound baseline, applies the empirical
+    compound offset and then ages the new compound with its historical net age-trend
+    prior. These public-data priors remain observational rather than tyre physics.
     """
     config = config or SimulationConfig()
     strategies = strategies or {}
@@ -231,21 +266,28 @@ def simulate(
 
     for j, driver in enumerate(drivers):
         strategy = strategies.get(driver.driver_number)
-        pit_offset = strategy.pit_in_laps if strategy else _default_pit_offset(driver)
+        pit_offset = strategy.pit_in_laps if strategy else _default_pit_offset(driver, config)
         next_compound = (strategy.next_compound if strategy else "MEDIUM").upper()
         gap = np.full(n, driver.gap_to_leader_s, dtype=float)
         gap[sc] *= config.safety_car_gap_multiplier
         total = gap
         age = np.full(n, driver.tyre_age, dtype=float)
         compound = driver.compound
+        pit_done = False
+        live_degradation = min(driver.degradation_s_per_lap, config.max_degradation_s_per_lap)
+        fresh_current_pace = driver.pace_s - live_degradation * driver.tyre_age
 
         for lap in range(1, laps_remaining + 1):
-            compound_delta = _relative_compound_delta(driver.compound, compound)
-            # Current pace already represents current tyre age. Before a stop, only
-            # additional ageing is added. After a stop, age=0 naturally includes the
-            # estimated rejuvenation benefit relative to the current worn tyre.
-            ageing_delta = driver.degradation_s_per_lap * (age - driver.tyre_age)
-            lap_mean = driver.pace_s + compound_delta + ageing_delta
+            if pit_done:
+                compound_delta = _relative_compound_delta(driver.compound, compound, config)
+                new_degradation = _compound_value(
+                    config.compound_degradation_s_per_lap,
+                    compound,
+                    live_degradation,
+                )
+                lap_mean = fresh_current_pace + compound_delta + new_degradation * age
+            else:
+                lap_mean = driver.pace_s + live_degradation * (age - driver.tyre_age)
             noise = rng.normal(0, max(config.lap_noise_s, driver.pace_uncertainty_s * 0.35), n)
             total += lap_mean + noise
             age += 1
@@ -257,6 +299,7 @@ def simulate(
                 total += pit_loss
                 age[:] = 0
                 compound = next_compound
+                pit_done = True
 
         dnf_probability = 1 - (1 - driver.dnf_hazard_per_lap) ** laps_remaining
         dnf[:, j] = rng.random(n) < dnf_probability
@@ -317,7 +360,7 @@ def predict_from_state(
     drivers = drivers_from_state(snapshot, config, pace_overrides, dnf_hazard_overrides)
     results, audit = simulate(drivers, laps_remaining, strategies, config)
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "analysis_kind": "live_race_monte_carlo",
         "session_key": snapshot.get("session_key"),
         "state_updated_at": snapshot.get("updated_at"),
