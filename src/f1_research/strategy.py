@@ -27,6 +27,9 @@ class SimulationConfig:
     safety_car_gap_multiplier: float = 0.30
     safety_car_pit_loss_multiplier: float = 0.58
     max_degradation_s_per_lap: float = 0.20
+    traffic_window_s: float = 1.20
+    traffic_penalty_mean_s: float = 0.12
+    traffic_penalty_sd_s: float = 0.05
     compound_pace_delta_s: dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_PACE_DELTA)
     )
@@ -42,6 +45,14 @@ class SimulationConfig:
             raise ValueError("samples must be >= 1000 for stable scenario summaries")
         if not 0 <= self.dnf_hazard_per_lap < 1 or not 0 <= self.safety_car_hazard_per_lap < 1:
             raise ValueError("hazards must be probabilities in [0, 1)")
+        if not 0 < self.safety_car_gap_multiplier <= 1:
+            raise ValueError("safety_car_gap_multiplier must be in (0, 1]")
+        if not 0 < self.safety_car_pit_loss_multiplier <= 1:
+            raise ValueError("safety_car_pit_loss_multiplier must be in (0, 1]")
+        if self.traffic_window_s < 0:
+            raise ValueError("traffic_window_s must be non-negative")
+        if self.traffic_penalty_mean_s < 0 or self.traffic_penalty_sd_s < 0:
+            raise ValueError("traffic penalties must be non-negative")
         for name, mapping in (
             ("compound_pace_delta_s", self.compound_pace_delta_s),
             ("compound_degradation_s_per_lap", self.compound_degradation_s_per_lap),
@@ -228,6 +239,50 @@ def _relative_compound_delta(
     return current - start
 
 
+def _compress_gaps(total: np.ndarray, mask: np.ndarray, multiplier: float) -> None:
+    """Compress only the selected Monte Carlo samples around their current leader."""
+    if not np.any(mask):
+        return
+    selected = total[mask]
+    leader = selected.min(axis=1, keepdims=True)
+    total[mask] = leader + (selected - leader) * multiplier
+
+
+def _traffic_penalty(
+    total: np.ndarray,
+    rng: np.random.Generator,
+    config: SimulationConfig,
+    disabled_samples: np.ndarray | None = None,
+) -> tuple[np.ndarray, int]:
+    """Approximate close-following loss from the simulated order at lap start.
+
+    This is intentionally a conservative state-derived heuristic. It is not a learned
+    aerodynamic/DRS model. Random numbers are drawn for every sample/position so pit
+    strategy comparisons retain common-random-number structure as far as possible.
+    """
+    n, m = total.shape
+    penalty = np.zeros_like(total)
+    if m < 2 or config.traffic_window_s <= 0 or config.traffic_penalty_mean_s <= 0:
+        return penalty, 0
+
+    order = np.argsort(total, axis=1, kind="stable")
+    ordered = np.take_along_axis(total, order, axis=1)
+    gaps = np.diff(ordered, axis=1)
+    close = (gaps > 0) & (gaps < config.traffic_window_s)
+    if disabled_samples is not None:
+        close &= ~disabled_samples[:, None]
+
+    intensity = np.clip(1.0 - gaps / config.traffic_window_s, 0.0, 1.0)
+    mean = config.traffic_penalty_mean_s * intensity
+    draw = rng.normal(mean, config.traffic_penalty_sd_s, size=(n, m - 1))
+    draw = np.where(close, np.maximum(0.0, draw), 0.0)
+
+    ordered_penalty = np.zeros_like(total)
+    ordered_penalty[:, 1:] = draw
+    np.put_along_axis(penalty, order, ordered_penalty, axis=1)
+    return penalty, int(close.sum())
+
+
 def simulate(
     drivers: list[DriverInput],
     laps_remaining: int,
@@ -236,11 +291,11 @@ def simulate(
 ) -> tuple[list[SimulationResult], dict[str, Any]]:
     """Simulate coherent finishing orders from the current race state.
 
-    ``pace_s`` is the observed/modelled pace at the current tyre state. Before a stop,
-    only additional ageing relative to the current tyre age is added. After a stop,
-    the simulator backs out a fresh-current-compound baseline, applies the empirical
-    compound offset and then ages the new compound with its historical net age-trend
-    prior. These public-data priors remain observational rather than tyre physics.
+    The engine advances all cars one lap at a time. That matters because a future
+    Safety Car must compress the *then-current* gaps, not today's gaps, and a pit stop
+    can move a car into traffic for subsequent laps. Traffic loss is a small explicit
+    heuristic based on simulated time-to-car-ahead; it is not represented as team
+    aerodynamic or overtaking software.
     """
     config = config or SimulationConfig()
     strategies = strategies or {}
@@ -253,55 +308,86 @@ def simulate(
 
     rng = np.random.default_rng(config.seed)
     n, m = config.samples, len(drivers)
-    remaining = np.zeros((n, m), dtype=float)
+    total = np.tile(
+        np.asarray([driver.gap_to_leader_s for driver in drivers], dtype=float),
+        (n, 1),
+    )
     dnf = np.zeros((n, m), dtype=bool)
 
     sc_probability = 1 - (1 - config.safety_car_hazard_per_lap) ** laps_remaining
-    sc = rng.random(n) < sc_probability
+    sc_occurs = rng.random(n) < sc_probability
     sc_lap = rng.integers(1, laps_remaining + 1, n)
 
-    for j, driver in enumerate(drivers):
-        strategy = strategies.get(driver.driver_number)
-        pit_offset = strategy.pit_in_laps if strategy else _default_pit_offset(driver, config)
-        next_compound = (strategy.next_compound if strategy else "MEDIUM").upper()
-        gap = np.full(n, driver.gap_to_leader_s, dtype=float)
-        gap[sc] *= config.safety_car_gap_multiplier
-        total = gap
-        age = np.full(n, driver.tyre_age, dtype=float)
-        compound = driver.compound
-        pit_done = False
-        live_degradation = min(driver.degradation_s_per_lap, config.max_degradation_s_per_lap)
-        fresh_current_pace = driver.pace_s - live_degradation * driver.tyre_age
+    pit_offsets: list[int | None] = []
+    next_compounds: list[str] = []
+    compounds = [driver.compound for driver in drivers]
+    ages = np.asarray([driver.tyre_age for driver in drivers], dtype=float)
+    pit_done = np.zeros(m, dtype=bool)
+    live_degradation = np.asarray(
+        [min(driver.degradation_s_per_lap, config.max_degradation_s_per_lap) for driver in drivers],
+        dtype=float,
+    )
+    fresh_current_pace = np.asarray(
+        [driver.pace_s for driver in drivers], dtype=float
+    ) - live_degradation * ages
+    pace_uncertainty = np.asarray(
+        [max(config.lap_noise_s, driver.pace_uncertainty_s * 0.35) for driver in drivers],
+        dtype=float,
+    )
 
-        for lap in range(1, laps_remaining + 1):
-            if pit_done:
-                compound_delta = _relative_compound_delta(driver.compound, compound, config)
+    for driver in drivers:
+        strategy = strategies.get(driver.driver_number)
+        pit_offsets.append(strategy.pit_in_laps if strategy else _default_pit_offset(driver, config))
+        next_compounds.append((strategy.next_compound if strategy else "MEDIUM").upper())
+
+    traffic_events = 0
+    sc_samples_by_lap: dict[str, int] = {}
+
+    for lap in range(1, laps_remaining + 1):
+        sc_now = sc_occurs & (sc_lap == lap)
+        if np.any(sc_now):
+            _compress_gaps(total, sc_now, config.safety_car_gap_multiplier)
+            sc_samples_by_lap[str(lap)] = int(sc_now.sum())
+
+        traffic, events = _traffic_penalty(total, rng, config, disabled_samples=sc_now)
+        traffic_events += events
+
+        lap_mean = np.empty(m, dtype=float)
+        for j, driver in enumerate(drivers):
+            if pit_done[j]:
+                compound_delta = _relative_compound_delta(driver.compound, compounds[j], config)
                 new_degradation = _compound_value(
                     config.compound_degradation_s_per_lap,
-                    compound,
-                    live_degradation,
+                    compounds[j],
+                    live_degradation[j],
                 )
-                lap_mean = fresh_current_pace + compound_delta + new_degradation * age
+                lap_mean[j] = fresh_current_pace[j] + compound_delta + new_degradation * ages[j]
             else:
-                lap_mean = driver.pace_s + live_degradation * (age - driver.tyre_age)
-            noise = rng.normal(0, max(config.lap_noise_s, driver.pace_uncertainty_s * 0.35), n)
-            total += lap_mean + noise
-            age += 1
+                lap_mean[j] = driver.pace_s + live_degradation[j] * (ages[j] - driver.tyre_age)
 
-            if pit_offset is not None and lap == pit_offset:
-                pit_loss = rng.normal(config.pit_loss_mean_s, config.pit_loss_sd_s, n)
-                pit_loss = np.maximum(8.0, pit_loss)
-                pit_loss[sc & (sc_lap == lap)] *= config.safety_car_pit_loss_multiplier
-                total += pit_loss
-                age[:] = 0
-                compound = next_compound
-                pit_done = True
+        noise = rng.normal(0.0, pace_uncertainty, size=(n, m))
+        total += lap_mean[None, :] + noise + traffic
 
+        pitting = np.zeros(m, dtype=bool)
+        for j, pit_offset in enumerate(pit_offsets):
+            if pit_offset is None or pit_done[j] or lap != pit_offset:
+                continue
+            pit_loss = rng.normal(config.pit_loss_mean_s, config.pit_loss_sd_s, n)
+            pit_loss = np.maximum(8.0, pit_loss)
+            pit_loss[sc_now] *= config.safety_car_pit_loss_multiplier
+            total[:, j] += pit_loss
+            compounds[j] = next_compounds[j]
+            pit_done[j] = True
+            pitting[j] = True
+
+        ages += 1.0
+        ages[pitting] = 0.0
+
+    for j, driver in enumerate(drivers):
         dnf_probability = 1 - (1 - driver.dnf_hazard_per_lap) ** laps_remaining
         dnf[:, j] = rng.random(n) < dnf_probability
-        remaining[:, j] = total
 
-    ranking_score = remaining + dnf.astype(float) * 1_000_000.0
+    ranking_score = total + dnf.astype(float) * 1_000_000.0
     orders = np.argsort(ranking_score, axis=1, kind="stable")
     ranks = np.empty_like(orders)
     np.put_along_axis(ranks, orders, np.arange(1, m + 1)[None, :], axis=1)
@@ -320,7 +406,7 @@ def simulate(
                 position_p10=int(np.quantile(r, 0.10, method="inverted_cdf")),
                 position_p90=int(np.quantile(r, 0.90, method="inverted_cdf")),
                 dnf_probability=float(dnf[:, j].mean()),
-                mean_remaining_time_s=float(remaining[:, j].mean()),
+                mean_remaining_time_s=float(total[:, j].mean()),
             )
         )
     audit = {
@@ -328,6 +414,10 @@ def simulate(
         "seed": config.seed,
         "laps_remaining": laps_remaining,
         "safety_car_any_probability": sc_probability,
+        "safety_car_gap_application": "dynamic_at_sampled_sc_lap",
+        "safety_car_samples_by_lap": sc_samples_by_lap,
+        "traffic_model": "simulated-gap heuristic; not empirically calibrated aero/DRS model",
+        "traffic_close_following_events": traffic_events,
         "assumptions": asdict(config),
         "pace_sources": {str(driver.driver_number): driver.pace_source for driver in drivers},
         "dnf_hazards_per_lap": {
@@ -356,7 +446,7 @@ def predict_from_state(
     drivers = drivers_from_state(snapshot, config, pace_overrides, dnf_hazard_overrides)
     results, audit = simulate(drivers, laps_remaining, strategies, config)
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "analysis_kind": "live_race_monte_carlo",
         "session_key": snapshot.get("session_key"),
         "state_updated_at": snapshot.get("updated_at"),
