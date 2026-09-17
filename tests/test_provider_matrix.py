@@ -92,7 +92,7 @@ def test_matrix_preserves_pre_reconciliation_failure_without_inventing_schema(tm
         verification_status="FAIL",
         reconciliation_schema_version=None,
         provider_errors={"OpenF1": "HTTPError: upstream unavailable"},
-        event_identity={"verified": False},
+        event_identity={"verified": False, "failures": ["country mismatch"]},
         hard_mismatch_count=1,
     )
     matrix = build_matrix([source])
@@ -102,6 +102,8 @@ def test_matrix_preserves_pre_reconciliation_failure_without_inventing_schema(tm
     assert row["passed"] is False
     assert row["reconciliation_performed"] is False
     assert row["provider_error_count"] == 1
+    assert row["provider_error_keys"] == ("OpenF1",)
+    assert row["event_identity_failures"] == ("country mismatch",)
 
 
 def test_matrix_marks_completed_reconciliation_explicitly(tmp_path: Path):
