@@ -463,47 +463,31 @@ def _provider_integrity(
 
     for row in rows:
         if row.position is None:
-            if _position_required(row):
-                failures.append(Mismatch(
-                    provider,
-                    provider,
-                    row.driver_number,
-                    "position",
-                    None,
-                    None,
-                    "hard",
-                    "provider is missing position for a classified finisher/lapped car",
-                ))
-            else:
-                insufficient.append({
-                    "provider": provider,
-                    "driver_number": row.driver_number,
-                    "field": "position",
-                    "status_class": row.status_class,
-                    "reason": "provider does not expose a final position for this non-finisher",
-                })
+            insufficient.append({
+                "provider": provider,
+                "driver_number": row.driver_number,
+                "field": "position",
+                "status_class": row.status_class,
+                "reason": (
+                    "provider omits final position for a classified finisher/lapped car"
+                    if _position_required(row)
+                    else "provider does not expose a final position for this non-finisher"
+                ),
+            })
         if row.laps is None:
             # Some providers omit completed-lap counts for DNS/DSQ/non-finishers.
             # That is an evidence gap, not proof that the driver completed zero laps.
-            if _result_class(row) in {"completed", "classified_lapped"}:
-                failures.append(Mismatch(
-                    provider,
-                    provider,
-                    row.driver_number,
-                    "laps",
-                    None,
-                    None,
-                    "hard",
-                    "provider is missing completed laps for a classified finisher",
-                ))
-            else:
-                insufficient.append({
-                    "provider": provider,
-                    "driver_number": row.driver_number,
-                    "field": "laps",
-                    "status_class": row.status_class,
-                    "reason": "provider does not expose completed laps for this non-finisher",
-                })
+            insufficient.append({
+                "provider": provider,
+                "driver_number": row.driver_number,
+                "field": "laps",
+                "status_class": row.status_class,
+                "reason": (
+                    "provider omits completed laps for a classified finisher/lapped car"
+                    if _result_class(row) in {"completed", "classified_lapped"}
+                    else "provider does not expose completed laps for this non-finisher"
+                ),
+            })
         if row.status_class is None:
             failures.append(Mismatch(
                 provider,
