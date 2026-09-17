@@ -18,6 +18,10 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     benchmark.write_text(json.dumps({
         "data_kind": "historical", "test_events": test_events,
         "predictions": [{"driver": "VER"}], "metrics": [{"position_mae": 1.0}],
+        "audit": {"test_updates_model": False, "split": {
+            "fit": ["E1"], "tuning": ["E2"], "calibration": ["E3"],
+            "test": [f"T{i}" for i in range(test_events)],
+        }},
     }))
     model = tmp_path / "model.bin"
     model.write_bytes(b"model")
