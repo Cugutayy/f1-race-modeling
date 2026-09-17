@@ -1,24 +1,17 @@
 name: Provider reconciliation
 
 on:
-  workflow_dispatch:
-    inputs:
-      year:
-        description: Completed F1 season year
-        required: true
-        default: '2026'
-      round:
-        description: Completed championship round number
-        required: true
-      openf1_session_key:
-        description: Explicit OpenF1 Race session_key for the same event
-        required: true
+  push:
+    branches:
+      - audit/run-provider-reconciliation-2025-australia-v2
+    paths:
+      - .github/workflows/provider-reconciliation.yml
 
 permissions:
   contents: read
 
 concurrency:
-  group: provider-reconciliation-${{ inputs.year }}-${{ inputs.round }}
+  group: provider-reconciliation-2025-1-australia-v2
   cancel-in-progress: false
 
 jobs:
@@ -39,15 +32,15 @@ jobs:
       - name: Audit completed race across Jolpica, OpenF1 and FastF1
         run: |
           python -m f1_research.provider_audit \
-            --year '${{ inputs.year }}' \
-            --round '${{ inputs.round }}' \
-            --openf1-session-key '${{ inputs.openf1_session_key }}' \
+            --year '2025' \
+            --round '1' \
+            --openf1-session-key '9693' \
             --cache data/reconciliation-cache \
-            --output 'reports/reconciliation/${{ inputs.year }}-R${{ inputs.round }}'
+            --output 'reports/reconciliation/2025-R1'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: provider-reconciliation-${{ inputs.year }}-R${{ inputs.round }}
+          name: provider-reconciliation-2025-R1-v2
           path: reports/reconciliation
           if-no-files-found: error
           retention-days: 30
