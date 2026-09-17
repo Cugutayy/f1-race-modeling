@@ -7,6 +7,7 @@ raw capture files and provider credentials never reach the browser.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
 DEFAULT_MODEL = ROOT / "reports" / "local" / "lap-strict" / "next_lap_strict.joblib"
 DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-strict" / "strategy_priors.json"
 MAX_STATE_BYTES = 20 * 1024 * 1024
+MAX_TELEMETRY_TAIL_BYTES = 4 * 1024 * 1024
 
 app = FastAPI(title="F1 Race Intelligence API", version="1.0.0", docs_url="/docs")
 
@@ -37,6 +39,11 @@ def _path(env_name: str, default: Path) -> Path:
 
 def _state_path() -> Path:
     return _path("F1_LIVE_STATE_PATH", DEFAULT_STATE)
+
+
+def _events_path() -> Path:
+    configured = os.environ.get("F1_LIVE_EVENTS_PATH")
+    return Path(configured).expanduser().resolve() if configured else _state_path().with_name("events.jsonl")
 
 
 def _model_path() -> Path:
@@ -63,8 +70,6 @@ def _read_state() -> dict[str, Any]:
     if size <= 0 or size > MAX_STATE_BYTES:
         raise HTTPException(status_code=503, detail="Live state failed size validation")
     try:
-        import json
-
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="Live state is unreadable") from exc
@@ -126,6 +131,54 @@ def _safe(value: Any) -> Any:
     return str(value)
 
 
+def _tail_lines(path: Path, max_bytes: int = MAX_TELEMETRY_TAIL_BYTES) -> list[str]:
+    if not path.exists():
+        return []
+    with path.open("rb") as handle:
+        size = handle.seek(0, 2)
+        start = max(0, size - max_bytes)
+        handle.seek(start)
+        data = handle.read()
+    if start > 0:
+        newline = data.find(b"\n")
+        data = data[newline + 1:] if newline >= 0 else b""
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
+def _telemetry(driver_number: int, limit: int) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for line in reversed(_tail_lines(_events_path())):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        topic = str(item.get("topic") or "").removeprefix("v1/")
+        if topic != "car_data":
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        try:
+            number = int(payload.get("driver_number"))
+        except (TypeError, ValueError):
+            continue
+        if number != driver_number:
+            continue
+        output.append({
+            "date": payload.get("date") or item.get("received_at"),
+            "speed_kmh": payload.get("speed"),
+            "throttle_pct": payload.get("throttle"),
+            "brake": payload.get("brake"),
+            "rpm": payload.get("rpm"),
+            "gear": payload.get("n_gear"),
+            "drs": payload.get("drs"),
+        })
+        if len(output) >= limit:
+            break
+    output.reverse()
+    return _safe(output)
+
+
 def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     state = _read_state()
     config, prior_audit = _simulation_config(samples)
@@ -176,6 +229,18 @@ def live(
     _: None = Depends(_authorize),
 ) -> JSONResponse:
     return JSONResponse(_live_report(total_laps, samples))
+
+
+@app.get("/v1/telemetry")
+def telemetry(
+    driver_number: int = Query(ge=1, le=999),
+    limit: int = Query(default=500, ge=10, le=2000),
+    _: None = Depends(_authorize),
+) -> JSONResponse:
+    return JSONResponse({
+        "driver_number": driver_number,
+        "samples": _telemetry(driver_number, limit),
+    })
 
 
 @app.get("/v1/strategy")
