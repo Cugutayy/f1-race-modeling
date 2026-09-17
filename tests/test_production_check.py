@@ -49,15 +49,15 @@ def test_production_gate_can_pass_complete_evidence(tmp_path):
 
 
 def test_production_gate_rejects_failed_real_audit(tmp_path):
-    truth, benchmark, manifest, model, replay = _files(tmp_path, status="FAIL")
-    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, replay_capture=replay)
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path, status="FAIL")
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, calibration=calibration, replay_capture=replay)
     assert result["production_ready"] is False
     assert result["checks"]["data_truth"]["passed"] is False
 
 
 def test_production_gate_rejects_tampered_model(tmp_path):
-    truth, benchmark, manifest, model, replay = _files(tmp_path)
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
     model.write_bytes(b"tampered")
-    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model)
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, calibration=calibration, replay_capture=replay)
     assert result["production_ready"] is False
     assert result["checks"]["model_integrity"]["passed"] is False
