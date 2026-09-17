@@ -121,6 +121,27 @@ only on the tuning block; its final probability temperature is re-estimated on t
 later calibration block. Sealed test results never tune weights, hyperparameters or
 temperature.
 
+Add whole-race bootstrap uncertainty to the sealed result:
+
+```bash
+python -m f1_research.benchmark_evidence \
+  --metrics reports/local/benchmark-v2/fold_metrics.csv \
+  --output reports/local/benchmark-v2/evidence \
+  --samples 10000
+```
+
+Then build the compact evidence file consumed by the live product:
+
+```bash
+python -m f1_research.model_evidence \
+  --benchmark-dir reports/local/benchmark-v2 \
+  --output reports/local/lap-strict/model_evidence.json
+```
+
+`model_evidence.json` is generated from the versioned sealed benchmark outputs. It is
+not a hand-written UI claim. If uncertainty has not been generated, the compact file
+leaves uncertainty unavailable rather than inventing an interval.
+
 ## 5. Live capture
 
 Configure OpenF1 live credentials using environment variables. Do not commit them.
@@ -175,6 +196,7 @@ export F1_LIVE_EVENTS_PATH="$PWD/reports/local/live/events.jsonl"
 export F1_LIVE_MANIFEST_PATH="$PWD/reports/local/live/manifest.json"
 export F1_STRICT_MODEL_PATH="$PWD/reports/local/lap-strict/next_lap_strict.joblib"
 export F1_STRATEGY_PRIORS_PATH="$PWD/reports/local/lap-strict/strategy_priors.json"
+export F1_MODEL_EVIDENCE_PATH="$PWD/reports/local/lap-strict/model_evidence.json"
 
 f1-api
 ```
@@ -183,10 +205,15 @@ Useful endpoints:
 
 ```text
 GET /healthz
+GET /v1/evidence
 GET /v1/live?total_laps=57&samples=4000
 GET /v1/telemetry?driver_number=1&limit=500
 GET /v1/strategy?driver_number=1&total_laps=57&samples=4000
 ```
+
+`/v1/evidence` serves only a validated schema-v1 compact sealed-benchmark artifact. A
+missing artifact returns 404; malformed or unsupported evidence returns 503 rather than
+being shown as valid model proof.
 
 `/healthz` separates provider transport health from canonical-state freshness. Watch:
 
@@ -196,6 +223,7 @@ GET /v1/strategy?driver_number=1&total_laps=57&samples=4000
 - `state_age_s`
 - `connect_count` / `disconnect_count`
 - `last_stream_error`
+- `model_evidence`
 - rejected stale/provider-order message counters
 
 A connected MQTT socket with stale messages is not reported as a healthy live stream.
@@ -217,7 +245,9 @@ docker compose -f compose.live.yaml up --build -d
 ```
 
 The two services share a persistent `live-data` volume. The API receives model files
-from the read-only local mount `reports/local/lap-strict`.
+from the read-only local mount `reports/local/lap-strict`. Put
+`model_evidence.json` in that directory along with `next_lap_strict.joblib` and
+`strategy_priors.json` before starting the API if the Evidence panel should be enabled.
 
 ## 8. Vercel / Next.js
 
@@ -229,7 +259,10 @@ F1_BACKEND_TOKEN=<same value as F1_API_TOKEN>
 ```
 
 The token is used only by Vercel route handlers and must never be exposed as a public
-`NEXT_PUBLIC_*` variable.
+`NEXT_PUBLIC_*` variable. The browser requests `/api/evidence`; the Vercel route handler
+proxies it server-side to `/v1/evidence` without exposing the backend bearer token.
+Historical model evidence is fetched once on page load rather than joined to the
+2-second live polling loop.
 
 ## 9. Live evidence rules
 
@@ -238,5 +271,7 @@ The UI should never silently promote a fallback into “AI live prediction”:
 - if the strict artifact is missing, pace uses the recent-lap fallback and says so;
 - if strategy priors are missing, simulation uses explicit built-in defaults and says so;
 - if the capture is stale or MQTT is reconnecting, the UI should show stale/delayed;
+- if the sealed evidence artifact is missing, the Evidence drawer says it is not installed;
 - retrospective tyre/traffic calibration is not presented as team telemetry or causal tyre/aero physics;
-- sealed benchmark metrics remain separate from tuning and calibration metrics.
+- sealed benchmark metrics remain separate from tuning and calibration metrics;
+- a bootstrap interval crossing zero is shown as uncertainty, not hidden behind the point estimate.
