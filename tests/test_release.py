@@ -15,11 +15,12 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
                 "event_id": f"E{event}", "date": f"2025-{event + 1:02d}-01",
                 "driver": driver, "team": "T1" if driver == "AAA" else "T2",
                 "finish_position": finish, "grid_position": finish,
-                "quali_position": finish, "quali_gap": float(finish - 1),
+                "quali_position": finish, "quali_seconds": 80.0 + finish, "quali_gap": float(finish - 1),
                 "driver_form": float(finish), "team_form": float(finish),
                 "circuit_driver_form": float(finish), "circuit_team_form": float(finish),
                 "driver_dnf_rate": 0.0, "team_dnf_rate": 0.0,
-                "round": event + 1, "circuit": "X", "season": 2025,
+                "round": event + 1, "circuit": "X", "year": 2025, "season": 2025,
+                "points": 25.0 if finish == 1 else 18.0, "dnf": 0,
             })
     frame = pd.DataFrame(rows)
 
