@@ -3,8 +3,8 @@
 Only quantities supported by captured historical sources are calibrated here.
 Team-only fuel/setup/tyre-temperature information is never inferred. Reliability is
 estimated as a shrunk public-results survival prior, not a diagnosis of an individual
-car's current mechanical state. Tyre priors are retrospective public-timing estimates,
-not physical tyre-energy or tyre-life measurements.
+car's current mechanical state. Tyre and traffic priors are retrospective public-timing
+estimates, not physical tyre/aero measurements.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ import pandas as pd
 from .reliability import as_payload as reliability_payload
 from .reliability import calibrate_reliability, records_from_raw
 from .strategy import SimulationConfig
+from .traffic_calibration import as_payload as traffic_payload
+from .traffic_calibration import calibrate_traffic_prior, config_values_from_payload
 from .tyre_calibration import as_payload as tyre_payload
 from .tyre_calibration import calibrate_tyre_priors, maps_from_payload
 
@@ -48,7 +50,9 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
     return value
 
 
-def _robust_location_scale(values: list[float], fallback_mean: float, fallback_sd: float) -> tuple[float, float]:
+def _robust_location_scale(
+    values: list[float], fallback_mean: float, fallback_sd: float
+) -> tuple[float, float]:
     clean = np.asarray([value for value in values if np.isfinite(value)], dtype=float)
     if len(clean) < 5:
         return fallback_mean, fallback_sd
@@ -72,7 +76,10 @@ def _pit_excess(datasets: list[pd.DataFrame]) -> list[float]:
         if "is_pit_out_lap" in frame:
             mask &= ~frame.is_pit_out_lap.fillna(False).astype(bool)
         selected = frame.loc[mask, ["target_s", "recent_median_5_s"]].dropna()
-        excess = selected.target_s.to_numpy(dtype=float) - selected.recent_median_5_s.to_numpy(dtype=float)
+        excess = (
+            selected.target_s.to_numpy(dtype=float)
+            - selected.recent_median_5_s.to_numpy(dtype=float)
+        )
         values.extend(excess[(excess >= 5.0) & (excess <= 60.0)].tolist())
     return values
 
@@ -111,13 +118,17 @@ def _dnf_exposure(rows: list[dict[str, Any]]) -> tuple[int, int]:
     return failures, exposure
 
 
-def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
-                              session_keys: list[int],
-                              fallback: SimulationConfig | None = None) -> tuple[StrategyPriors, dict[str, Any]]:
+def calibrate_strategy_priors(
+    datasets: list[pd.DataFrame],
+    raw_root: Path,
+    session_keys: list[int],
+    fallback: SimulationConfig | None = None,
+) -> tuple[StrategyPriors, dict[str, Any]]:
     fallback = fallback or SimulationConfig()
     pit_values = _pit_excess(datasets)
     pit_mean, pit_sd = _robust_location_scale(
-        pit_values, fallback.pit_loss_mean_s, fallback.pit_loss_sd_s)
+        pit_values, fallback.pit_loss_mean_s, fallback.pit_loss_sd_s
+    )
 
     total_laps = 0
     sc_starts = 0
@@ -129,8 +140,11 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
         lap_rows = _read_rows(session_dir / "laps.json")
         control_rows = _read_rows(session_dir / "race_control.json")
         result_rows = _read_rows(session_dir / "session_result.json")
-        lap_numbers = [int(row["lap_number"]) for row in lap_rows
-                       if isinstance(row.get("lap_number"), (int, float)) and row["lap_number"] > 0]
+        lap_numbers = [
+            int(row["lap_number"])
+            for row in lap_rows
+            if isinstance(row.get("lap_number"), (int, float)) and row["lap_number"] > 0
+        ]
         if lap_numbers:
             total_laps += max(lap_numbers)
         sc_starts += _sc_start_count(control_rows)
@@ -140,6 +154,7 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
         source_files.append({
             "session_key": session_key,
             "laps": str(session_dir / "laps.json"),
+            "intervals": str(session_dir / "intervals.json"),
             "race_control": str(session_dir / "race_control.json"),
             "session_result": str(session_dir / "session_result.json"),
             "drivers": str(session_dir / "drivers.json"),
@@ -165,6 +180,14 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
         pooled_fallback=dnf_hazard,
     )
     tyre_model, tyre_audit = calibrate_tyre_priors(datasets)
+    traffic_model, traffic_audit = calibrate_traffic_prior(
+        datasets,
+        raw_root,
+        session_keys,
+        fallback_mean_s=fallback.traffic_penalty_mean_s,
+        fallback_sd_s=fallback.traffic_penalty_sd_s,
+        close_window_s=fallback.traffic_window_s,
+    )
 
     priors = StrategyPriors(
         pit_loss_mean_s=float(np.clip(pit_mean, 8.0, 45.0)),
@@ -189,6 +212,8 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
         "reliability_model": reliability_payload(reliability_model),
         "tyre": tyre_audit,
         "tyre_model": tyre_payload(tyre_model),
+        "traffic": traffic_audit,
+        "traffic_model": traffic_payload(traffic_model),
         "source_files": source_files,
         "limitations": [
             "Pit lap excess is not identical to geometric pit-lane loss and remains traffic/condition dependent.",
@@ -196,20 +221,25 @@ def calibrate_strategy_priors(datasets: list[pd.DataFrame], raw_root: Path,
             "Reliability hazards are public-results priors, not current mechanical-fault diagnoses.",
             "Team and driver reliability effects are hierarchically shrunk because DNF samples are sparse.",
             "Tyre calibration is retrospective public timing, not physical tyre energy or a guaranteed tyre-life limit.",
+            "Traffic calibration is an observational close-vs-clear timing contrast, not a causal aerodynamic model.",
         ],
     }
     return priors, audit
 
 
-def save_strategy_priors(priors: StrategyPriors, audit: dict[str, Any], path: Path) -> dict[str, Any]:
+def save_strategy_priors(
+    priors: StrategyPriors, audit: dict[str, Any], path: Path
+) -> dict[str, Any]:
     clean_audit = dict(audit)
     reliability = clean_audit.pop("reliability_model", None)
     tyre = clean_audit.pop("tyre_model", None)
+    traffic = clean_audit.pop("traffic_model", None)
     payload = {
-        "schema_version": 4,
+        "schema_version": 5,
         "priors": asdict(priors),
         "reliability": reliability,
         "tyre": tyre,
+        "traffic": traffic,
         "audit": clean_audit,
     }
     path = Path(path)
@@ -218,14 +248,24 @@ def save_strategy_priors(priors: StrategyPriors, audit: dict[str, Any], path: Pa
     return payload
 
 
-def load_simulation_config(path: Path, *, samples: int | None = None,
-                           seed: int | None = None) -> tuple[SimulationConfig, dict[str, Any]]:
+def load_simulation_config(
+    path: Path,
+    *,
+    samples: int | None = None,
+    seed: int | None = None,
+) -> tuple[SimulationConfig, dict[str, Any]]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     priors = payload.get("priors") if isinstance(payload, dict) else None
     if not isinstance(priors, dict):
         raise ValueError("Strategy prior file has no priors object")
     pace, degradation, pit_age = maps_from_payload(payload.get("tyre"))
     base = SimulationConfig()
+    traffic_window, traffic_mean, traffic_sd = config_values_from_payload(
+        payload.get("traffic"),
+        fallback_window_s=base.traffic_window_s,
+        fallback_mean_s=base.traffic_penalty_mean_s,
+        fallback_sd_s=base.traffic_penalty_sd_s,
+    )
     config = SimulationConfig(
         samples=int(samples if samples is not None else base.samples),
         seed=int(seed if seed is not None else base.seed),
@@ -237,6 +277,9 @@ def load_simulation_config(path: Path, *, samples: int | None = None,
         safety_car_gap_multiplier=base.safety_car_gap_multiplier,
         safety_car_pit_loss_multiplier=base.safety_car_pit_loss_multiplier,
         max_degradation_s_per_lap=base.max_degradation_s_per_lap,
+        traffic_window_s=traffic_window,
+        traffic_penalty_mean_s=traffic_mean,
+        traffic_penalty_sd_s=traffic_sd,
         compound_pace_delta_s=pace,
         compound_degradation_s_per_lap=degradation,
         compound_stint_target_laps=pit_age,
