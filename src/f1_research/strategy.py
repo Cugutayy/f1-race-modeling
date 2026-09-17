@@ -248,6 +248,19 @@ def _compress_gaps(total: np.ndarray, mask: np.ndarray, multiplier: float) -> No
     total[mask] = leader + (selected - leader) * multiplier
 
 
+def _sample_first_event_lap(
+    rng: np.random.Generator,
+    samples: int,
+    laps_remaining: int,
+    hazard_per_lap: float,
+) -> np.ndarray:
+    """Sample the first event from a constant discrete hazard, 0 meaning no event."""
+    if hazard_per_lap <= 0:
+        return np.zeros(samples, dtype=int)
+    event_lap = rng.geometric(hazard_per_lap, size=samples)
+    return np.where(event_lap <= laps_remaining, event_lap, 0).astype(int)
+
+
 def _traffic_penalty(
     total: np.ndarray,
     rng: np.random.Generator,
@@ -315,8 +328,13 @@ def simulate(
     dnf = np.zeros((n, m), dtype=bool)
 
     sc_probability = 1 - (1 - config.safety_car_hazard_per_lap) ** laps_remaining
-    sc_occurs = rng.random(n) < sc_probability
-    sc_lap = rng.integers(1, laps_remaining + 1, n)
+    sc_lap = _sample_first_event_lap(
+        rng,
+        n,
+        laps_remaining,
+        config.safety_car_hazard_per_lap,
+    )
+    sc_occurs = sc_lap > 0
 
     pit_offsets: list[int | None] = []
     next_compounds: list[str] = []
@@ -414,8 +432,10 @@ def simulate(
         "seed": config.seed,
         "laps_remaining": laps_remaining,
         "safety_car_any_probability": sc_probability,
+        "safety_car_event_time_model": "first-event truncated geometric from per-lap hazard",
         "safety_car_gap_application": "dynamic_at_sampled_sc_lap",
         "safety_car_samples_by_lap": sc_samples_by_lap,
+        "safety_car_duration_model": "not_modelled; pit discount applies on sampled start lap only",
         "traffic_model": "simulated-gap heuristic; not empirically calibrated aero/DRS model",
         "traffic_close_following_events": traffic_events,
         "assumptions": asdict(config),
