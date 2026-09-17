@@ -483,16 +483,27 @@ def _provider_integrity(
                     "reason": "provider does not expose a final position for this non-finisher",
                 })
         if row.laps is None:
-            failures.append(Mismatch(
-                provider,
-                provider,
-                row.driver_number,
-                "laps",
-                None,
-                None,
-                "hard",
-                "provider is missing completed laps",
-            ))
+            # Some providers omit completed-lap counts for DNS/DSQ/non-finishers.
+            # That is an evidence gap, not proof that the driver completed zero laps.
+            if _result_class(row) in {"completed", "classified_lapped"}:
+                failures.append(Mismatch(
+                    provider,
+                    provider,
+                    row.driver_number,
+                    "laps",
+                    None,
+                    None,
+                    "hard",
+                    "provider is missing completed laps for a classified finisher",
+                ))
+            else:
+                insufficient.append({
+                    "provider": provider,
+                    "driver_number": row.driver_number,
+                    "field": "laps",
+                    "status_class": row.status_class,
+                    "reason": "provider does not expose completed laps for this non-finisher",
+                })
         if row.status_class is None:
             failures.append(Mismatch(
                 provider,
@@ -592,7 +603,19 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                         "provider values disagree",
                     ))
 
-                if a.laps != b.laps:
+                if a.laps is None or b.laps is None:
+                    insufficient_hard.append({
+                        "provider_a": provider_a,
+                        "provider_b": provider_b,
+                        "driver_number": number,
+                        "field": "laps",
+                        "value_a": a.laps,
+                        "value_b": b.laps,
+                        "status_a": a.status_class,
+                        "status_b": b.status_class,
+                        "reason": "at least one provider lacks completed-lap evidence",
+                    })
+                elif a.laps != b.laps:
                     mismatches.append(Mismatch(
                         provider_a,
                         provider_b,
