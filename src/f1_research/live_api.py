@@ -8,6 +8,7 @@ raw capture files and provider credentials never reach the browser.
 from __future__ import annotations
 
 import json
+import asyncio
 import math
 import os
 from datetime import UTC, datetime
@@ -15,12 +16,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from .data_truth import assert_trusted_live_state, audit_payload
 from .live_intelligence import combined_live_report, combined_pit_windows, load_strict_artifact
 from .live_quality import classify as classify_live_quality
+from .live_protocol import encode as encode_live_envelope, envelope as live_envelope
 from .reliability import reliability_overrides_from_state
 from .monitoring import snapshot as monitoring_snapshot
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
@@ -418,6 +420,47 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
         "disconnect_count": stream.get("disconnect_count"),
         "last_stream_error": stream.get("last_error"),
     }))
+
+
+
+@app.websocket("/v1/ws")
+async def live_socket(websocket: WebSocket) -> None:
+    expected = os.environ.get("F1_API_TOKEN")
+    supplied = websocket.query_params.get("token")
+    if expected and supplied != expected:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    sequence = 0
+    last_hash = None
+    try:
+        while True:
+            try:
+                state = _read_state()
+            except HTTPException:
+                await asyncio.sleep(0.5)
+                continue
+            state_hash = live_envelope(
+                sequence=1, event_type="state_probe", state=state, payload={}
+            ).state_sha256
+            if state_hash != last_hash:
+                sequence += 1
+                item = live_envelope(
+                    sequence=sequence,
+                    event_type="state_update",
+                    state=state,
+                    payload={
+                        "session_key": state.get("session_key"),
+                        "current_lap": state.get("current_lap"),
+                        "updated_at": state.get("updated_at"),
+                    },
+                    provider_time=state.get("latest_provider_event_at"),
+                )
+                await websocket.send_text(encode_live_envelope(item))
+                last_hash = state_hash
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        return
 
 
 @app.get("/v1/metrics")
