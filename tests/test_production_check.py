@@ -23,6 +23,8 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     }))
     model = tmp_path / "model.bin"
     model.write_bytes(b"model")
+    calibration = tmp_path / "calibration.json"
+    calibration.write_bytes(b"calibration")
     manifest = tmp_path / "manifest.json"
     write_manifest(manifest, ModelManifest(
         1, "rank-v1", _sha(b"model"), _sha(b"features"), _sha(b"data"),
@@ -37,12 +39,12 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
             "driver_number": 1, "position": 1,
         },
     }) + "\n")
-    return truth, benchmark, manifest, model, replay
+    return truth, benchmark, manifest, model, calibration, replay
 
 
 def test_production_gate_can_pass_complete_evidence(tmp_path):
-    truth, benchmark, manifest, model, replay = _files(tmp_path)
-    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, replay_capture=replay)
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, calibration=calibration, replay_capture=replay)
     assert result["production_ready"] is True
 
 
