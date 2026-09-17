@@ -1,0 +1,53 @@
+name: Provider reconciliation
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: Completed F1 season year
+        required: true
+        default: '2026'
+      round:
+        description: Completed championship round number
+        required: true
+      openf1_session_key:
+        description: Explicit OpenF1 Race session_key for the same event
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-reconciliation-${{ inputs.year }}-${{ inputs.round }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - name: Install independent FastF1 comparison provider
+        run: python -m pip install 'fastf1>=3.6,<4'
+      - name: Reconcile completed race across Jolpica, OpenF1 and FastF1
+        run: |
+          python -m f1_research.provider_reconciliation \
+            --year '${{ inputs.year }}' \
+            --round '${{ inputs.round }}' \
+            --openf1-session-key '${{ inputs.openf1_session_key }}' \
+            --cache data/reconciliation-cache \
+            --output 'reports/reconciliation/${{ inputs.year }}-R${{ inputs.round }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-reconciliation-${{ inputs.year }}-R${{ inputs.round }}
+          path: reports/reconciliation
+          if-no-files-found: warn
+          retention-days: 30
