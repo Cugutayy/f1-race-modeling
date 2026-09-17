@@ -23,7 +23,16 @@ from .lap_mixture import attach_regime_labels, fit_mixture
 from .openf1_live import OpenF1Client
 from .strategy_calibration import calibrate_strategy_priors, save_strategy_priors
 
-ENDPOINTS = ("laps", "stints", "weather", "pit", "race_control", "session_result", "drivers")
+ENDPOINTS = (
+    "laps",
+    "stints",
+    "weather",
+    "pit",
+    "race_control",
+    "session_result",
+    "drivers",
+    "intervals",
+)
 
 
 def _write_json(path: Path, value: Any) -> dict[str, Any]:
@@ -33,8 +42,12 @@ def _write_json(path: Path, value: Any) -> dict[str, Any]:
     return {"path": str(path), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def select_completed_races(client: OpenF1Client, year: int, count: int,
-                           now: datetime | None = None) -> list[dict[str, Any]]:
+def select_completed_races(
+    client: OpenF1Client,
+    year: int,
+    count: int,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
     now = now or datetime.now(UTC)
     sessions = client.get("sessions", year=year, session_name="Race")
     completed = []
@@ -51,8 +64,14 @@ def select_completed_races(client: OpenF1Client, year: int, count: int,
     return completed[-count:]
 
 
-def collect_session(client: OpenF1Client, session: dict[str, Any], output: Path,
-                    *, latency_s: float = 1.0, refresh: bool = False) -> tuple[pd.DataFrame, dict[str, Any]]:
+def collect_session(
+    client: OpenF1Client,
+    session: dict[str, Any],
+    output: Path,
+    *,
+    latency_s: float = 1.0,
+    refresh: bool = False,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     session_key = int(session["session_key"])
     raw_dir = Path(output) / "raw" / str(session_key)
     sources: dict[str, Any] = {}
@@ -64,16 +83,27 @@ def collect_session(client: OpenF1Client, session: dict[str, Any], output: Path,
             rows = json.loads(raw)
             if not isinstance(rows, list):
                 raise ValueError(f"Invalid cached {endpoint} for session {session_key}")
-            sources[endpoint] = {"path": str(path), "bytes": len(raw),
-                                 "sha256": hashlib.sha256(raw).hexdigest(), "cached": True}
+            sources[endpoint] = {
+                "path": str(path),
+                "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "cached": True,
+            }
         else:
             rows = client.get(endpoint, session_key=session_key)
-            sources[endpoint] = {**_write_json(path, rows), "cached": False,
-                                 "retrieved_at": datetime.now(UTC).isoformat()}
+            sources[endpoint] = {
+                **_write_json(path, rows),
+                "cached": False,
+                "retrieved_at": datetime.now(UTC).isoformat(),
+            }
         data[endpoint] = rows
     dataset = build_lap_dataset(
-        data["laps"], stint_rows=data["stints"], weather_rows=data["weather"],
-        pit_rows=data["pit"], race_control_rows=data["race_control"], latency_s=latency_s,
+        data["laps"],
+        stint_rows=data["stints"],
+        weather_rows=data["weather"],
+        pit_rows=data["pit"],
+        race_control_rows=data["race_control"],
+        latency_s=latency_s,
     )
     if dataset.empty:
         raise ValueError(f"Session {session_key} produced no next-lap training rows")
@@ -91,12 +121,15 @@ def collect_session(client: OpenF1Client, session: dict[str, Any], output: Path,
         "latency_assumption_s": latency_s,
         "rows": len(dataset),
         "valid_targets": int(dataset.target_valid.sum()),
-        "regime_counts": {str(key): int(value) for key, value in dataset.lap_regime.value_counts().items()},
+        "regime_counts": {
+            str(key): int(value) for key, value in dataset.lap_regime.value_counts().items()
+        },
         "dataset_sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
         "sources": sources,
         "limitations": [
             "OpenF1 date_start is approximate and target availability adds an explicit simulated latency.",
             "Historical stint rows have no publication timestamp, so compound/tyre-age are retrospective features.",
+            "Historical intervals are retained for retrospective traffic calibration, not strict model features.",
             "Public timing data is not equivalent to team telemetry or tyre/fuel/setup data.",
             "Unexpected Safety Car/VSC activation mid-lap is not known at the lap-start forecast cutoff.",
         ],
@@ -105,13 +138,25 @@ def collect_session(client: OpenF1Client, session: dict[str, Any], output: Path,
     return dataset, manifest
 
 
-def collect_recent(year: int, count: int, output: Path, *, latency_s: float = 1.0,
-                   refresh: bool = False) -> tuple[list[pd.DataFrame], list[dict[str, Any]]]:
+def collect_recent(
+    year: int,
+    count: int,
+    output: Path,
+    *,
+    latency_s: float = 1.0,
+    refresh: bool = False,
+) -> tuple[list[pd.DataFrame], list[dict[str, Any]]]:
     client = OpenF1Client.from_env()
     sessions = select_completed_races(client, year, count)
     datasets, manifests = [], []
     for session in sessions:
-        dataset, manifest = collect_session(client, session, output, latency_s=latency_s, refresh=refresh)
+        dataset, manifest = collect_session(
+            client,
+            session,
+            output,
+            latency_s=latency_s,
+            refresh=refresh,
+        )
         datasets.append(dataset)
         manifests.append(manifest)
     return datasets, manifests
@@ -127,8 +172,11 @@ def _available_specs(include_foundation: bool) -> tuple[LapModelSpec, ...]:
     return tuple(specs)
 
 
-def train_selected(datasets: list[pd.DataFrame], selected_name: str,
-                   specs: tuple[LapModelSpec, ...]) -> Any:
+def train_selected(
+    datasets: list[pd.DataFrame],
+    selected_name: str,
+    specs: tuple[LapModelSpec, ...],
+) -> Any:
     spec = next((candidate for candidate in specs if candidate.name == selected_name), None)
     if spec is None:
         raise ValueError(f"Selected model spec not found: {selected_name}")
@@ -139,12 +187,25 @@ def train_selected(datasets: list[pd.DataFrame], selected_name: str,
     return build_lap_estimator(spec).fit(train[FEATURES], train.target_s)
 
 
-def run(year: int, count: int, output: Path, *, latency_s: float = 1.0,
-        include_foundation: bool = False, refresh: bool = False) -> dict[str, Any]:
+def run(
+    year: int,
+    count: int,
+    output: Path,
+    *,
+    latency_s: float = 1.0,
+    include_foundation: bool = False,
+    refresh: bool = False,
+) -> dict[str, Any]:
     if count < 4:
         raise ValueError("At least four completed races are required for fit/tune/calibration/test")
     output = Path(output)
-    datasets, manifests = collect_recent(year, count, output, latency_s=latency_s, refresh=refresh)
+    datasets, manifests = collect_recent(
+        year,
+        count,
+        output,
+        latency_s=latency_s,
+        refresh=refresh,
+    )
     specs = _available_specs(include_foundation)
 
     legacy_metrics, legacy_audit = benchmark_lap_models(datasets, specs=specs)
@@ -161,12 +222,20 @@ def run(year: int, count: int, output: Path, *, latency_s: float = 1.0,
         "pipeline": legacy_model,
     }, legacy_path)
 
-    mixture_artifact, mixture_metrics, mixture_audit = fit_mixture(datasets, specs=specs, alpha=0.10)
+    mixture_artifact, mixture_metrics, mixture_audit = fit_mixture(
+        datasets,
+        specs=specs,
+        alpha=0.10,
+    )
     mixture_path = output / "next_lap_mixture.joblib"
     joblib.dump(mixture_artifact, mixture_path)
 
     session_keys = [int(manifest["session_key"]) for manifest in manifests]
-    strategy_priors, strategy_audit = calibrate_strategy_priors(datasets, output / "raw", session_keys)
+    strategy_priors, strategy_audit = calibrate_strategy_priors(
+        datasets,
+        output / "raw",
+        session_keys,
+    )
     strategy_path = output / "strategy_priors.json"
     strategy_payload = save_strategy_priors(strategy_priors, strategy_audit, strategy_path)
 
@@ -182,12 +251,18 @@ def run(year: int, count: int, output: Path, *, latency_s: float = 1.0,
         "legacy_audit": legacy_audit,
         "strategy_priors": strategy_payload,
         "artifacts": {
-            "mixture": {"path": str(mixture_path),
-                        "sha256": hashlib.sha256(mixture_path.read_bytes()).hexdigest()},
-            "single_regressor": {"path": str(legacy_path),
-                                 "sha256": hashlib.sha256(legacy_path.read_bytes()).hexdigest()},
-            "strategy_priors": {"path": str(strategy_path),
-                                "sha256": hashlib.sha256(strategy_path.read_bytes()).hexdigest()},
+            "mixture": {
+                "path": str(mixture_path),
+                "sha256": hashlib.sha256(mixture_path.read_bytes()).hexdigest(),
+            },
+            "single_regressor": {
+                "path": str(legacy_path),
+                "sha256": hashlib.sha256(legacy_path.read_bytes()).hexdigest(),
+            },
+            "strategy_priors": {
+                "path": str(strategy_path),
+                "sha256": hashlib.sha256(strategy_path.read_bytes()).hexdigest(),
+            },
         },
         "created_at": datetime.now(UTC).isoformat(),
     }
@@ -222,12 +297,20 @@ def main(argv=None):
     parser.add_argument("--foundation", action="store_true", help="Also evaluate local TabICLv2")
     parser.add_argument("--refresh", action="store_true")
     args = parser.parse_args(argv)
-    report = run(args.year, args.race_count, args.output, latency_s=args.latency_s,
-                 include_foundation=args.foundation, refresh=args.refresh)
-    print(json.dumps({"selected_model": report["selected_model"],
-                      "sessions": report["sessions"],
-                      "mixture_summary": report["mixture_summary"],
-                      "strategy_priors": report["strategy_priors"]["priors"]}, indent=2))
+    report = run(
+        args.year,
+        args.race_count,
+        args.output,
+        latency_s=args.latency_s,
+        include_foundation=args.foundation,
+        refresh=args.refresh,
+    )
+    print(json.dumps({
+        "selected_model": report["selected_model"],
+        "sessions": report["sessions"],
+        "mixture_summary": report["mixture_summary"],
+        "strategy_priors": report["strategy_priors"]["priors"],
+    }, indent=2))
 
 
 if __name__ == "__main__":
