@@ -22,7 +22,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from .live_api import app as live_app
+from .scoped_live_api import app as live_app
 
 LOGGER = logging.getLogger("f1_research.railway")
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
