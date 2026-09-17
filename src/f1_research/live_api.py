@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from .data_truth import assert_trusted_live_state, audit_payload
 from .live_intelligence import combined_live_report, combined_pit_windows, load_strict_artifact
+from .live_quality import classify as classify_live_quality
 from .reliability import reliability_overrides_from_state
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
@@ -354,8 +355,11 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
             trusted_live_ready = True
         except HTTPException as exc:
             trusted_live_error = str(exc.detail)
+    quality = classify_live_quality(state_age_s=_state_age_s(state), provider_age_s=_age_s(state.get("latest_provider_event_at")), connection_state=connection_state, max_age_s=_max_live_age_s())
     return JSONResponse(_safe({
         "ok": state_path.exists(),
+        "quality_status": quality.status,
+        "quality_reasons": list(quality.reasons),
         "state_path": str(state_path),
         "state_age_s": _state_age_s(state),
         "provider_event_age_s": _age_s(state.get("latest_provider_event_at")),
