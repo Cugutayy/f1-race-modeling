@@ -1,0 +1,44 @@
+name: Reconciliation smoke 2025 R1
+
+on:
+  push:
+    branches:
+      - audit/reconciliation-smoke-2025-r1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reconciliation-smoke-2025-r1
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - name: Install FastF1 comparison provider
+        run: python -m pip install 'fastf1>=3.6,<4'
+      - name: Audit 2025 Australian GP across public providers
+        run: |
+          python -m f1_research.provider_audit \
+            --year 2025 \
+            --round 1 \
+            --openf1-session-key 9693 \
+            --cache data/reconciliation-cache \
+            --output reports/reconciliation/2025-R1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-reconciliation-2025-R1
+          path: reports/reconciliation
+          if-no-files-found: error
+          retention-days: 30
