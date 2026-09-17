@@ -35,6 +35,8 @@ class MatrixEvent:
     insufficient_hard_count: int
     insufficient_secondary_count: int
     provider_error_count: int
+    provider_error_keys: tuple[str, ...]
+    event_identity_failures: tuple[str, ...]
     reconciliation_performed: bool
 
 
@@ -142,6 +144,8 @@ def _load_event(path: Path) -> MatrixEvent:
             payload.get("insufficient_secondary_count"), field="insufficient_secondary_count"
         ),
         provider_error_count=len(provider_errors),
+        provider_error_keys=tuple(sorted(str(key) for key in provider_errors)),
+        event_identity_failures=tuple(str(item) for item in (identity.get("failures") or [])),
         reconciliation_performed=reconciliation_performed,
     )
 
