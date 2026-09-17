@@ -1,6 +1,9 @@
 name: Provider reconciliation
 
 on:
+  push:
+    branches:
+      - audit/run-provider-reconciliation-2025-australia-main-v4
   workflow_dispatch:
     inputs:
       year:
@@ -18,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: provider-reconciliation-${{ inputs.year }}-${{ inputs.round }}
+  group: provider-reconciliation-australia-main-v4
   cancel-in-progress: false
 
 jobs:
@@ -39,15 +42,15 @@ jobs:
       - name: Audit completed race across Jolpica, OpenF1 and FastF1
         run: |
           python -m f1_research.provider_audit \
-            --year '${{ inputs.year }}' \
-            --round '${{ inputs.round }}' \
-            --openf1-session-key '${{ inputs.openf1_session_key }}' \
+            --year '2025' \
+            --round '1' \
+            --openf1-session-key '9693' \
             --cache data/reconciliation-cache \
-            --output 'reports/reconciliation/${{ inputs.year }}-R${{ inputs.round }}'
+            --output 'reports/reconciliation/2025-R1-main-v4'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: provider-reconciliation-${{ inputs.year }}-R${{ inputs.round }}
+          name: provider-reconciliation-2025-R1-main-v4
           path: reports/reconciliation
           if-no-files-found: error
           retention-days: 30
