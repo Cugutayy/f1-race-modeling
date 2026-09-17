@@ -47,6 +47,9 @@ def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path
         checks[name] = {"passed": passed, "detail": detail}
     try:
         loaded = load_manifest(manifest, model_path=model)
+        benchmark_payload = json.loads(benchmark.read_text(encoding="utf-8"))
+        if benchmark_payload.get("run_id") != loaded.benchmark_run_id:
+            raise ValueError("model manifest benchmark run does not match benchmark artifact")
         checks["model_integrity"] = {"passed": True, "detail": loaded.model_id}
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         checks["model_integrity"] = {"passed": False, "detail": f"{type(exc).__name__}: {exc}"}
