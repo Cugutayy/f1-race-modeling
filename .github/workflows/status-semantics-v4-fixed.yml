@@ -1,0 +1,232 @@
+name: Validate status semantic split fixed
+
+on:
+  push:
+    branches:
+      - audit/status-semantics-v4
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - name: Apply semantic split and regression tests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          src_path = Path('src/f1_research/provider_reconciliation.py')
+          text = src_path.read_text()
+
+          def one(old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one source match, got {count}: {old[:100]!r}')
+              text = text.replace(old, new)
+
+          one('HARD_FIELDS = ("position", "laps", "status_class")', 'HARD_FIELDS = ("position", "laps", "result_class", "start_status")')
+          one(
+              '    "status_class": (\n        "Conservative normalized class: finished, classified_lapped, dnf, dns or dsq. "\n        "Raw provider status is retained for audit."\n    ),\n    "grid_position": (',
+              '    "status_class": (\n        "Provider-specific normalized label: finished, classified_lapped, dnf, dns or dsq. "\n        "Retained for audit context; not compared as a cross-provider hard fact because providers "\n        "can encode start participation and final classification semantics differently."\n    ),\n    "result_class": (\n        "Cross-provider comparable race-result class derived conservatively from each provider label: "\n        "completed, classified_lapped, non_finisher or disqualified. DNS and DNF both map to "\n        "non_finisher here; their start-participation distinction is carried separately."\n    ),\n    "start_status": (\n        "Start-participation evidence: started, dns or UNKNOWN. A zero-lap generic Retired/DNF label "\n        "from Jolpica/FastF1 is UNKNOWN rather than guessed started or DNS; OpenF1 explicit DNS/DNF "\n        "flags can distinguish the states."\n    ),\n    "grid_position": ('
+          )
+          marker = '\n\ndef _pit_counts_jolpica(payload: dict[str, Any] | None) -> tuple[bool, dict[str, int]]:'
+          helpers = '''
+
+def _result_class(row: ResultRow) -> str | None:
+    """Map provider status labels only to semantics that are comparable across sources."""
+    if row.status_class == "finished":
+        return "completed"
+    if row.status_class == "classified_lapped":
+        return "classified_lapped"
+    if row.status_class in {"dnf", "dns"}:
+        return "non_finisher"
+    if row.status_class == "dsq":
+        return "disqualified"
+    return None
+
+
+def _start_status(row: ResultRow) -> str | None:
+    """Return start evidence without turning a zero-lap generic retirement into a guess."""
+    if row.status_class == "dns":
+        return "dns"
+    if row.status_class in {"finished", "classified_lapped"}:
+        return "started"
+    if row.status_class == "dnf":
+        if row.provider == "OpenF1":
+            return "started"
+        if row.laps is not None and row.laps > 0:
+            return "started"
+        return None
+    if row.status_class == "dsq" and row.laps is not None and row.laps > 0:
+        return "started"
+    return None
+'''
+          one(marker, helpers + marker)
+          one(
+              '''                for field in ("laps", "status_class"):
+                    value_a, value_b = getattr(a, field), getattr(b, field)
+                    if value_a != value_b:
+                        mismatches.append(Mismatch(
+                            provider_a,
+                            provider_b,
+                            number,
+                            field,
+                            value_a,
+                            value_b,
+                            "hard",
+                            "provider values disagree",
+                        ))
+''',
+              '''                if a.laps != b.laps:
+                    mismatches.append(Mismatch(
+                        provider_a,
+                        provider_b,
+                        number,
+                        "laps",
+                        a.laps,
+                        b.laps,
+                        "hard",
+                        "provider values disagree",
+                    ))
+
+                for field, semantic in (("result_class", _result_class), ("start_status", _start_status)):
+                    value_a, value_b = semantic(a), semantic(b)
+                    if value_a is None or value_b is None:
+                        insufficient_hard.append({
+                            "provider_a": provider_a,
+                            "provider_b": provider_b,
+                            "driver_number": number,
+                            "field": field,
+                            "value_a": value_a,
+                            "value_b": value_b,
+                            "status_class_a": a.status_class,
+                            "status_class_b": b.status_class,
+                            "reason": "at least one provider lacks comparable semantic evidence",
+                        })
+                    elif value_a != value_b:
+                        mismatches.append(Mismatch(
+                            provider_a,
+                            provider_b,
+                            number,
+                            field,
+                            value_a,
+                            value_b,
+                            "hard",
+                            "provider semantic values disagree",
+                        ))
+'''
+          )
+          one(
+              '''    normalized_payload = {
+        provider: [asdict(row) for row in rows]
+        for provider, rows in normalized.items()
+    }
+''',
+              '''    normalized_payload: dict[str, list[dict[str, Any]]] = {}
+    for provider, rows in normalized.items():
+        payload_rows: list[dict[str, Any]] = []
+        for row in rows:
+            payload = asdict(row)
+            payload["result_class"] = _result_class(row)
+            payload["start_status"] = _start_status(row)
+            payload_rows.append(payload)
+        normalized_payload[provider] = payload_rows
+'''
+          )
+          one('        "schema_version": 3,', '        "schema_version": 4,')
+          one('            "secondary_fields": list(SECONDARY_FIELDS),\n', '            "secondary_fields": list(SECONDARY_FIELDS),\n            "raw_status_class_is_audit_only": True,\n')
+          src_path.write_text(text)
+
+          test_path = Path('tests/test_provider_reconciliation.py')
+          tests = test_path.read_text()
+          tests += '''
+
+
+def test_dns_vs_zero_lap_retired_is_semantic_gap_not_false_hard_mismatch():
+    support = ResultRow("Jolpica", 1, 1, 57, "finished")
+    providers = {
+        "Jolpica": [support, ResultRow("Jolpica", 6, 2, 0, "dnf")],
+        "FastF1": [
+            ResultRow("FastF1", 1, 1, 57, "finished"),
+            ResultRow("FastF1", 6, 2, 0, "dnf"),
+        ],
+        "OpenF1": [
+            ResultRow("OpenF1", 1, 1, 57, "finished"),
+            ResultRow("OpenF1", 6, None, 0, "dns"),
+        ],
+    }
+    report = reconcile_results(providers)
+    assert report["passed"] is True
+    assert report["verification_status"] == "PASS_WITH_GAPS"
+    assert report["hard_mismatch_count"] == 0
+    assert not [m for m in report["mismatches"] if m["driver_number"] == 6 and m["field"] == "status_class"]
+    assert any(gap["driver_number"] == 6 and gap["field"] == "start_status" for gap in report["insufficient_hard_evidence"])
+    normalized = {
+        provider: {row["driver_number"]: row for row in rows}
+        for provider, rows in report["normalized"].items()
+    }
+    assert normalized["OpenF1"][6]["result_class"] == "non_finisher"
+    assert normalized["OpenF1"][6]["start_status"] == "dns"
+    assert normalized["Jolpica"][6]["result_class"] == "non_finisher"
+    assert normalized["Jolpica"][6]["start_status"] is None
+
+
+def test_genuine_result_class_disagreement_remains_hard_failure():
+    providers = {
+        "Jolpica": [
+            ResultRow("Jolpica", 1, 1, 57, "finished"),
+            ResultRow("Jolpica", 6, 2, 0, "dnf"),
+        ],
+        "OpenF1": [
+            ResultRow("OpenF1", 1, 1, 57, "finished"),
+            ResultRow("OpenF1", 6, 2, 0, "finished"),
+        ],
+    }
+    report = reconcile_results(providers)
+    assert report["passed"] is False
+    assert any(
+        row["driver_number"] == 6
+        and row["field"] == "result_class"
+        and row["severity"] == "hard"
+        for row in report["mismatches"]
+    )
+'''
+          test_path.write_text(tests)
+          PY
+      - name: Ruff and reconciliation tests
+        run: |
+          python -m ruff check src/f1_research/provider_reconciliation.py tests/test_provider_reconciliation.py tests/test_provider_reconciliation_semantics.py tests/test_provider_reconciliation_position_semantics.py
+          python -m pytest -q tests/test_provider_reconciliation.py tests/test_provider_reconciliation_semantics.py tests/test_provider_reconciliation_position_semantics.py tests/test_provider_event_identity.py tests/test_openf1_client_provenance.py
+      - name: Real Australia three-provider audit
+        run: |
+          python -m f1_research.provider_audit --year 2025 --round 1 --openf1-session-key 9693 --cache data/reconciliation-cache --output reports/status-v4-australia
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('reports/status-v4-australia/reconciliation.json').read_text())
+          assert report['hard_mismatch_count'] == 0, report['mismatches']
+          assert report['verification_status'] == 'PASS_WITH_GAPS', report['verification_status']
+          rows = {r['driver_number']: r for r in report['normalized']['OpenF1']}
+          assert rows[6]['status_class'] == 'dns'
+          assert rows[6]['result_class'] == 'non_finisher'
+          assert rows[6]['start_status'] == 'dns'
+          print(json.dumps({'verification_status': report['verification_status'], 'hard_mismatch_count': report['hard_mismatch_count'], 'insufficient_hard_count': report['insufficient_hard_count'], 'hadjar': rows[6]}, indent=2))
+          PY
+      - name: Commit verified source only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/f1_research/provider_reconciliation.py tests/test_provider_reconciliation.py
+          git commit -m 'Separate result and start status semantics'
+          git push origin HEAD:audit/status-semantics-v4
