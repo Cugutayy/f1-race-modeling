@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -27,6 +27,8 @@ def _state(updated_at: str | None = None):
         "session_name": "Race",
         "current_lap": 5,
         "updated_at": updated_at,
+        "rejected_stale_messages": 2,
+        "rejected_provider_order_messages": 1,
         "drivers": drivers,
     }
 
@@ -35,6 +37,7 @@ def _state(updated_at: str | None = None):
 def gateway_files(tmp_path, monkeypatch):
     state_path = tmp_path / "state.json"
     events_path = tmp_path / "events.jsonl"
+    manifest_path = tmp_path / "manifest.json"
     state_path.write_text(json.dumps(_state()), encoding="utf-8")
     events = [
         {"topic": "v1/car_data", "received_at": "2026-09-17T12:00:00+00:00", "payload": {
@@ -54,14 +57,27 @@ def gateway_files(tmp_path, monkeypatch):
         "\n".join([json.dumps(events[0]), "{malformed", json.dumps(events[1]), json.dumps(events[2])]) + "\n",
         encoding="utf-8",
     )
+    manifest_path.write_text(json.dumps({
+        "schema_version": 3,
+        "captured_rows": 1234,
+        "capture_bytes": 98765,
+        "stream": {
+            "connection_state": "connected",
+            "connect_count": 2,
+            "disconnect_count": 1,
+            "last_message_at": datetime.now(UTC).isoformat(),
+            "last_error": None,
+        },
+    }), encoding="utf-8")
     monkeypatch.setenv("F1_LIVE_STATE_PATH", str(state_path))
     monkeypatch.setenv("F1_LIVE_EVENTS_PATH", str(events_path))
+    monkeypatch.setenv("F1_LIVE_MANIFEST_PATH", str(manifest_path))
     monkeypatch.setenv("F1_STRICT_MODEL_PATH", str(tmp_path / "missing-model.joblib"))
     monkeypatch.setenv("F1_STRATEGY_PRIORS_PATH", str(tmp_path / "missing-priors.json"))
     monkeypatch.delenv("F1_API_TOKEN", raising=False)
     live_api._artifact_cache["key"] = None
     live_api._artifact_cache["value"] = None
-    return state_path, events_path
+    return state_path, events_path, manifest_path
 
 
 def test_gateway_authorization_is_optional_but_enforced_when_configured(monkeypatch):
@@ -94,7 +110,7 @@ def test_telemetry_tail_filters_driver_and_ignores_malformed_lines(gateway_files
     assert all(row["date"] for row in samples)
 
 
-def test_healthz_exposes_state_without_requiring_model(gateway_files):
+def test_healthz_exposes_transport_and_state_freshness(gateway_files):
     response = live_api.healthz(None)
     payload = json.loads(response.body)
     assert payload["ok"] is True
@@ -102,3 +118,22 @@ def test_healthz_exposes_state_without_requiring_model(gateway_files):
     assert payload["strategy_priors"] is False
     assert payload["session_key"] == 99
     assert payload["current_lap"] == 5
+    assert payload["connection_state"] == "connected"
+    assert payload["live_stream_healthy"] is True
+    assert payload["last_message_age_s"] <= 15
+    assert payload["connect_count"] == 2
+    assert payload["disconnect_count"] == 1
+    assert payload["capture_rows"] == 1234
+    assert payload["rejected_stale_messages"] == 2
+    assert payload["rejected_provider_order_messages"] == 1
+
+
+def test_healthz_does_not_call_stale_transport_healthy(gateway_files):
+    manifest_path = gateway_files[2]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["stream"]["last_message_at"] = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    payload = json.loads(live_api.healthz(None).body)
+    assert payload["connection_state"] == "connected"
+    assert payload["last_message_age_s"] >= 59
+    assert payload["live_stream_healthy"] is False
