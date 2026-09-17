@@ -37,6 +37,19 @@ class SimulationConfig:
 
 
 @dataclass(frozen=True)
+class PaceOverride:
+    pace_s: float
+    uncertainty_s: float
+    source: str = "learned_model"
+
+    def __post_init__(self):
+        if not np.isfinite(self.pace_s) or self.pace_s <= 0:
+            raise ValueError("pace override must be a positive finite lap time")
+        if not np.isfinite(self.uncertainty_s) or self.uncertainty_s <= 0:
+            raise ValueError("pace override uncertainty must be positive and finite")
+
+
+@dataclass(frozen=True)
 class DriverInput:
     driver_number: int
     label: str
@@ -48,6 +61,7 @@ class DriverInput:
     tyre_age: int
     compound: str
     pit_stops: int = 0
+    pace_source: str = "recent_laps"
 
 
 @dataclass(frozen=True)
@@ -97,8 +111,13 @@ def _robust_pace(laps: list[float], fallback: float | None = None) -> tuple[floa
     return pace, uncertainty, max(0.0, slope)
 
 
-def drivers_from_state(snapshot: dict[str, Any], config: SimulationConfig | None = None) -> list[DriverInput]:
+def drivers_from_state(
+    snapshot: dict[str, Any],
+    config: SimulationConfig | None = None,
+    pace_overrides: dict[int, PaceOverride] | None = None,
+) -> list[DriverInput]:
     config = config or SimulationConfig()
+    pace_overrides = pace_overrides or {}
     rows = snapshot.get("drivers", [])
     if not isinstance(rows, list):
         raise ValueError("state.drivers must be a list")
@@ -107,6 +126,7 @@ def drivers_from_state(snapshot: dict[str, Any], config: SimulationConfig | None
         position = row.get("position")
         if not isinstance(position, int) or position < 1:
             continue
+        driver_number = int(row["driver_number"])
         gap = row.get("gap_to_leader_s")
         gap = (
             0.0
@@ -121,7 +141,13 @@ def drivers_from_state(snapshot: dict[str, Any], config: SimulationConfig | None
             pace, uncertainty, degradation = _robust_pace(laps, fallback)
         except ValueError:
             continue
-        observed.append((row, position, gap, pace, uncertainty, degradation))
+        source = "recent_laps"
+        override = pace_overrides.get(driver_number)
+        if override is not None:
+            pace = float(override.pace_s)
+            uncertainty = float(override.uncertainty_s)
+            source = override.source
+        observed.append((row, position, gap, pace, uncertainty, degradation, source))
     if len(observed) < 2:
         raise ValueError("At least two drivers need position and pace observations")
 
@@ -131,7 +157,7 @@ def drivers_from_state(snapshot: dict[str, Any], config: SimulationConfig | None
         float(np.median(np.diff(sorted(set(known_gaps))))) if len(set(known_gaps)) >= 2 else 2.0,
     )
     result = []
-    for row, position, gap, pace, uncertainty, degradation in observed:
+    for row, position, gap, pace, uncertainty, degradation, source in observed:
         if gap is None:
             gap = step * (position - 1)
         result.append(
@@ -146,6 +172,7 @@ def drivers_from_state(snapshot: dict[str, Any], config: SimulationConfig | None
                 tyre_age=max(0, int(row.get("tyre_age") or 0)),
                 compound=str(row.get("compound") or "MEDIUM").upper(),
                 pit_stops=max(0, int(row.get("pit_stops") or 0)),
+                pace_source=source,
             )
         )
     return sorted(result, key=lambda item: item.current_position)
@@ -157,13 +184,26 @@ def _default_pit_offset(driver: DriverInput) -> int | None:
     return max(1, remaining) if remaining <= 12 else None
 
 
+def _relative_compound_delta(start_compound: str, current_compound: str) -> float:
+    """Relative change only: current observed pace already contains the start tyre effect."""
+    start = COMPOUND_PACE.get(start_compound, 0.0)
+    current = COMPOUND_PACE.get(current_compound, 0.0)
+    return current - start
+
+
 def simulate(
     drivers: list[DriverInput],
     laps_remaining: int,
     strategies: dict[int, Strategy] | None = None,
     config: SimulationConfig | None = None,
 ) -> tuple[list[SimulationResult], dict[str, Any]]:
-    """Simulate coherent finishing orders from the current race state."""
+    """Simulate coherent finishing orders from the current race state.
+
+    ``pace_s`` is the observed/modelled pace at the current tyre state. Therefore the
+    simulation adds only *future* ageing relative to that state. A pit stop resets tyre
+    age and applies the compound delta relative to the current compound; it does not
+    add the current compound effect twice.
+    """
     config = config or SimulationConfig()
     strategies = strategies or {}
     if laps_remaining < 1:
@@ -193,8 +233,12 @@ def simulate(
         compound = driver.compound
 
         for lap in range(1, laps_remaining + 1):
-            compound_delta = COMPOUND_PACE.get(compound, 0.0)
-            lap_mean = driver.pace_s + compound_delta + driver.degradation_s_per_lap * age
+            compound_delta = _relative_compound_delta(driver.compound, compound)
+            # Current pace already represents current tyre age. Before a stop, only
+            # additional ageing is added. After a stop, age=0 naturally includes the
+            # estimated rejuvenation benefit relative to the current worn tyre.
+            ageing_delta = driver.degradation_s_per_lap * (age - driver.tyre_age)
+            lap_mean = driver.pace_s + compound_delta + ageing_delta
             noise = rng.normal(0, max(config.lap_noise_s, driver.pace_uncertainty_s * 0.35), n)
             total += lap_mean + noise
             age += 1
@@ -239,6 +283,7 @@ def simulate(
         "laps_remaining": laps_remaining,
         "safety_car_any_probability": sc_probability,
         "assumptions": asdict(config),
+        "pace_sources": {str(driver.driver_number): driver.pace_source for driver in drivers},
         "strategy_overrides": {str(key): asdict(value) for key, value in strategies.items()},
         "status": "research simulation; not calibrated team strategy software",
     }
@@ -250,6 +295,7 @@ def predict_from_state(
     total_laps: int,
     strategies: dict[int, Strategy] | None = None,
     config: SimulationConfig | None = None,
+    pace_overrides: dict[int, PaceOverride] | None = None,
 ) -> dict[str, Any]:
     current_lap = snapshot.get("current_lap")
     if not isinstance(current_lap, int) or current_lap < 1:
@@ -257,10 +303,10 @@ def predict_from_state(
     laps_remaining = total_laps - current_lap
     if laps_remaining < 1:
         raise ValueError("Race has no future laps to simulate")
-    drivers = drivers_from_state(snapshot, config)
+    drivers = drivers_from_state(snapshot, config, pace_overrides)
     results, audit = simulate(drivers, laps_remaining, strategies, config)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "analysis_kind": "live_race_monte_carlo",
         "session_key": snapshot.get("session_key"),
         "state_updated_at": snapshot.get("updated_at"),
@@ -278,6 +324,7 @@ def compare_pit_windows(
     offsets: tuple[int, ...] = (1, 2, 3, 4, 5),
     compounds: tuple[str, ...] = ("SOFT", "MEDIUM", "HARD"),
     config: SimulationConfig | None = None,
+    pace_overrides: dict[int, PaceOverride] | None = None,
 ) -> list[dict[str, Any]]:
     """Counterfactual pit scenarios using common random seeds for lower comparison noise."""
     config = config or SimulationConfig()
@@ -285,7 +332,13 @@ def compare_pit_windows(
     for offset in offsets:
         for compound in compounds:
             strategy = Strategy(offset, compound, f"Pit +{offset} / {compound}")
-            report = predict_from_state(snapshot, total_laps, {driver_number: strategy}, config)
+            report = predict_from_state(
+                snapshot,
+                total_laps,
+                {driver_number: strategy},
+                config,
+                pace_overrides,
+            )
             row = next((p for p in report["predictions"] if p["driver_number"] == driver_number), None)
             if row is None:
                 raise ValueError(f"Driver {driver_number} not present in live state")
