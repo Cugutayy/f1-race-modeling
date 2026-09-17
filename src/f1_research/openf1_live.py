@@ -104,21 +104,24 @@ class OpenF1Client:
         if query:
             url += "?" + urlencode(query)
         response = self.session.get(url, timeout=self.timeout_s)
-        response.raise_for_status()
         retrieved_at = datetime.now(UTC).isoformat()
         raw_bytes = response.content
-        payload = response.json()
-        if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
-            raise ValueError(f"Unexpected OpenF1 response for {endpoint}")
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
         self.provenance.append({
             "provider": "OpenF1",
             "endpoint": endpoint,
             "url": response.url or url,
             "retrieved_at": retrieved_at,
             "sha256": hashlib.sha256(raw_bytes).hexdigest(),
-            "row_count": len(payload),
+            "row_count": len(payload) if isinstance(payload, list) else None,
             "http_status": int(response.status_code),
         })
+        response.raise_for_status()
+        if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+            raise ValueError(f"Unexpected OpenF1 response for {endpoint}")
         return payload
 
 

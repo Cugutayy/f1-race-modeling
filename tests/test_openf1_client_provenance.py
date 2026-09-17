@@ -34,3 +34,34 @@ def test_openf1_get_records_response_byte_provenance(monkeypatch):
     assert record["row_count"] == 1
     assert record["http_status"] == 200
     datetime.fromisoformat(record["retrieved_at"])
+
+
+class _FakeNotFoundResponse:
+    def __init__(self):
+        self.content = b'{"detail":"No results found."}'
+        self.url = "https://api.openf1.org/v1/starting_grid?session_key=9693"
+        self.status_code = 404
+
+    def raise_for_status(self):
+        import requests
+        raise requests.HTTPError("404 Client Error", response=self)
+
+    def json(self):
+        return {"detail": "No results found."}
+
+
+def test_openf1_http_failure_is_hashed_before_raise(monkeypatch):
+    import pytest
+    import requests
+
+    client = OpenF1Client()
+    response = _FakeNotFoundResponse()
+    monkeypatch.setattr(client.session, "get", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(requests.HTTPError):
+        client.get("starting_grid", session_key=9693)
+
+    assert client.provenance[-1]["endpoint"] == "starting_grid"
+    assert client.provenance[-1]["http_status"] == 404
+    assert client.provenance[-1]["row_count"] is None
+    assert client.provenance[-1]["sha256"] == hashlib.sha256(response.content).hexdigest()

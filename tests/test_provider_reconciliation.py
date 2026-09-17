@@ -233,3 +233,31 @@ def test_openf1_duplicate_starting_grid_driver_is_rejected():
     ]
     with pytest.raises(ValueError, match="duplicate driver_number"):
         normalize_openf1_results(_openf1_rows(), _openf1_drivers(), None, grid)
+
+
+def test_collect_openf1_raw_keeps_missing_starting_grid_as_unknown(monkeypatch):
+    import requests
+
+    import f1_research.provider_reconciliation as module
+
+    class Response:
+        status_code = 404
+
+    class FakeClient:
+        def __init__(self):
+            self.provenance = []
+
+        def get(self, endpoint, **filters):
+            if endpoint == "sessions":
+                return [{"session_key": 9693, "meeting_key": 1254, "session_name": "Race"}]
+            if endpoint == "meetings":
+                return [{"meeting_key": 1254}]
+            if endpoint == "starting_grid":
+                raise requests.HTTPError("404 Client Error", response=Response())
+            return []
+
+    monkeypatch.setattr(module, "OpenF1Client", FakeClient)
+    raw = module.collect_openf1_raw(9693)
+
+    assert raw["starting_grid"] is None
+    assert raw["optional_collection_errors"]["starting_grid"]["http_status"] == 404

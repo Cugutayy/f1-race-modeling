@@ -685,6 +685,21 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
     meetings = client.get("meetings", meeting_key=meeting_key)
     if len(meetings) != 1:
         raise ValueError("OpenF1 reconciliation expected exactly one meeting")
+
+    optional_collection_errors: dict[str, dict[str, Any]] = {}
+    try:
+        starting_grid = client.get("starting_grid", session_key=int(session_key))
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status != 404:
+            raise
+        starting_grid = None
+        optional_collection_errors["starting_grid"] = {
+            "error_type": type(exc).__name__,
+            "http_status": int(status),
+            "message": str(exc),
+        }
+
     return {
         "session": sessions[0],
         "meeting": meetings[0],
@@ -692,7 +707,8 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
         "drivers": client.get("drivers", session_key=int(session_key)),
         "laps": client.get("laps", session_key=int(session_key)),
         "pit": client.get("pit", session_key=int(session_key)),
-        "starting_grid": client.get("starting_grid", session_key=int(session_key)),
+        "starting_grid": starting_grid,
+        "optional_collection_errors": optional_collection_errors,
         "provenance": list(client.provenance),
     }
 
