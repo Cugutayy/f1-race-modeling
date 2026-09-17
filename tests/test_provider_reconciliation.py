@@ -136,7 +136,7 @@ def test_one_provider_position_disagreement_is_hard_and_never_majority_repaired(
     assert report["policy"]["repair_disagreements"] is False
 
 
-def test_missing_required_provider_field_is_reported_as_hard_integrity_failure():
+def test_missing_classified_laps_are_reported_as_evidence_gap():
     providers = _three_provider_rows()
     rows = list(providers["FastF1"])
     target = rows[0]
@@ -144,13 +144,14 @@ def test_missing_required_provider_field_is_reported_as_hard_integrity_failure()
     providers["FastF1"] = rows
 
     report = reconcile_results(providers)
-    assert report["passed"] is False
+    assert report["passed"] is True
+    assert report["verification_status"] == "PASS_WITH_GAPS"
+    assert report["hard_mismatch_count"] == 0
     assert any(
-        row["provider_a"] == "FastF1"
-        and row["provider_b"] == "FastF1"
+        row.get("provider") == "FastF1"
         and row["field"] == "laps"
-        and row["severity"] == "hard"
-        for row in report["mismatches"]
+        and "classified" in row["reason"]
+        for row in report["insufficient_hard_evidence"]
     )
 
 
