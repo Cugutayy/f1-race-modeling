@@ -10,8 +10,6 @@ on:
   push:
     branches:
       - main
-      - feature/live-race-intelligence
-      - fix/vercel-root-deploy
     paths:
       - 'web/**'
       - 'vercel.json'

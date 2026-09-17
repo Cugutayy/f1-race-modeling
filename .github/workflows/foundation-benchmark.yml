@@ -2,11 +2,6 @@ name: Foundation model benchmark
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feature/live-race-intelligence
-    paths:
-      - '.github/workflows/foundation-benchmark.yml'
 
 permissions:
   contents: read
@@ -38,7 +33,7 @@ jobs:
             --years 2022 2023 2024 2025 2026 \
             --output reports/foundation/history.csv \
             --cache .cache/jolpica
-      - name: Run TabICLv2 on the same sealed protocol
+      - name: Run full TabICLv2 on the same sealed protocol
         run: |
           python -m f1_research benchmark-v2 \
             --input reports/foundation/history.csv \

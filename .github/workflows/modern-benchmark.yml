@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - feature/live-race-intelligence
+      - main
     paths:
       - 'src/f1_research/data.py'
       - 'src/f1_research/features.py'
