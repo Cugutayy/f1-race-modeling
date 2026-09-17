@@ -219,3 +219,16 @@ def strategy(
         "strategy_prior_source": prior_audit,
         "scenarios": scenarios,
     }))
+
+
+def main() -> None:
+    """Run the persistent-worker API locally or on an always-on host."""
+    import uvicorn
+
+    host = os.environ.get("F1_API_HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", os.environ.get("F1_API_PORT", "8000")))
+    uvicorn.run("f1_research.live_api:app", host=host, port=port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()
