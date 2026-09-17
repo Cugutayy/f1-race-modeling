@@ -161,6 +161,8 @@ def test_strict_pace_drives_race_simulation_and_is_exposed_in_audit():
     assert report["pace_model"]["selected_regressor"] == artifact["selected_regressor"]
     assert report["pace_model"]["override_drivers"] == [1, 2, 3]
     assert set(report["audit"]["pace_sources"].values()) == {"strict_next_lap_conformal"}
-    assert sum(row["win_probability"] for row in report["predictions"]) == np.testing.assert_allclose(
-        sum(row["win_probability"] for row in report["predictions"]), 1.0, atol=1e-10
+    np.testing.assert_allclose(
+        sum(row["win_probability"] for row in report["predictions"]),
+        1.0,
+        atol=1e-10,
     )
