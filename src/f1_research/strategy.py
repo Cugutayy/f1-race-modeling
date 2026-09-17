@@ -62,6 +62,7 @@ class DriverInput:
     compound: str
     pit_stops: int = 0
     pace_source: str = "recent_laps"
+    dnf_hazard_per_lap: float = 0.0018
 
 
 @dataclass(frozen=True)
@@ -115,9 +116,11 @@ def drivers_from_state(
     snapshot: dict[str, Any],
     config: SimulationConfig | None = None,
     pace_overrides: dict[int, PaceOverride] | None = None,
+    dnf_hazard_overrides: dict[int, float] | None = None,
 ) -> list[DriverInput]:
     config = config or SimulationConfig()
     pace_overrides = pace_overrides or {}
+    dnf_hazard_overrides = dnf_hazard_overrides or {}
     rows = snapshot.get("drivers", [])
     if not isinstance(rows, list):
         raise ValueError("state.drivers must be a list")
@@ -147,7 +150,10 @@ def drivers_from_state(
             pace = float(override.pace_s)
             uncertainty = float(override.uncertainty_s)
             source = override.source
-        observed.append((row, position, gap, pace, uncertainty, degradation, source))
+        dnf_hazard = float(dnf_hazard_overrides.get(driver_number, config.dnf_hazard_per_lap))
+        if not np.isfinite(dnf_hazard) or not 0 <= dnf_hazard < 1:
+            raise ValueError(f"Invalid DNF hazard for driver {driver_number}")
+        observed.append((row, position, gap, pace, uncertainty, degradation, source, dnf_hazard))
     if len(observed) < 2:
         raise ValueError("At least two drivers need position and pace observations")
 
@@ -157,7 +163,7 @@ def drivers_from_state(
         float(np.median(np.diff(sorted(set(known_gaps))))) if len(set(known_gaps)) >= 2 else 2.0,
     )
     result = []
-    for row, position, gap, pace, uncertainty, degradation, source in observed:
+    for row, position, gap, pace, uncertainty, degradation, source, dnf_hazard in observed:
         if gap is None:
             gap = step * (position - 1)
         result.append(
@@ -173,6 +179,7 @@ def drivers_from_state(
                 compound=str(row.get("compound") or "MEDIUM").upper(),
                 pit_stops=max(0, int(row.get("pit_stops") or 0)),
                 pace_source=source,
+                dnf_hazard_per_lap=dnf_hazard,
             )
         )
     return sorted(result, key=lambda item: item.current_position)
@@ -251,7 +258,7 @@ def simulate(
                 age[:] = 0
                 compound = next_compound
 
-        dnf_probability = 1 - (1 - config.dnf_hazard_per_lap) ** laps_remaining
+        dnf_probability = 1 - (1 - driver.dnf_hazard_per_lap) ** laps_remaining
         dnf[:, j] = rng.random(n) < dnf_probability
         remaining[:, j] = total
 
@@ -284,6 +291,9 @@ def simulate(
         "safety_car_any_probability": sc_probability,
         "assumptions": asdict(config),
         "pace_sources": {str(driver.driver_number): driver.pace_source for driver in drivers},
+        "dnf_hazards_per_lap": {
+            str(driver.driver_number): driver.dnf_hazard_per_lap for driver in drivers
+        },
         "strategy_overrides": {str(key): asdict(value) for key, value in strategies.items()},
         "status": "research simulation; not calibrated team strategy software",
     }
@@ -296,6 +306,7 @@ def predict_from_state(
     strategies: dict[int, Strategy] | None = None,
     config: SimulationConfig | None = None,
     pace_overrides: dict[int, PaceOverride] | None = None,
+    dnf_hazard_overrides: dict[int, float] | None = None,
 ) -> dict[str, Any]:
     current_lap = snapshot.get("current_lap")
     if not isinstance(current_lap, int) or current_lap < 1:
@@ -303,10 +314,10 @@ def predict_from_state(
     laps_remaining = total_laps - current_lap
     if laps_remaining < 1:
         raise ValueError("Race has no future laps to simulate")
-    drivers = drivers_from_state(snapshot, config, pace_overrides)
+    drivers = drivers_from_state(snapshot, config, pace_overrides, dnf_hazard_overrides)
     results, audit = simulate(drivers, laps_remaining, strategies, config)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "analysis_kind": "live_race_monte_carlo",
         "session_key": snapshot.get("session_key"),
         "state_updated_at": snapshot.get("updated_at"),
@@ -325,6 +336,7 @@ def compare_pit_windows(
     compounds: tuple[str, ...] = ("SOFT", "MEDIUM", "HARD"),
     config: SimulationConfig | None = None,
     pace_overrides: dict[int, PaceOverride] | None = None,
+    dnf_hazard_overrides: dict[int, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Counterfactual pit scenarios using common random seeds for lower comparison noise."""
     config = config or SimulationConfig()
@@ -335,9 +347,10 @@ def compare_pit_windows(
             report = predict_from_state(
                 snapshot,
                 total_laps,
-                {driver_number: strategy},
-                config,
-                pace_overrides,
+                strategies={driver_number: strategy},
+                config=config,
+                pace_overrides=pace_overrides,
+                dnf_hazard_overrides=dnf_hazard_overrides,
             )
             row = next((p for p in report["predictions"] if p["driver_number"] == driver_number), None)
             if row is None:
