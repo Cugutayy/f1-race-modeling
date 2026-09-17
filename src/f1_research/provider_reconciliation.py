@@ -771,13 +771,31 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
             "message": str(exc),
         }
 
+    # Older OpenF1 sessions can omit optional timing collections (notably pit).
+    # Absence must remain explicit evidence instead of discarding otherwise valid
+    # session/meeting/result identity for the whole provider.
+    collections: dict[str, Any] = {}
+    for endpoint in ("laps", "pit"):
+        try:
+            collections[endpoint] = client.get(endpoint, session_key=int(session_key))
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status != 404:
+                raise
+            collections[endpoint] = []
+            optional_collection_errors[endpoint] = {
+                "error_type": type(exc).__name__,
+                "http_status": int(status),
+                "message": str(exc),
+            }
+
     return {
         "session": sessions[0],
         "meeting": meetings[0],
         "session_result": client.get("session_result", session_key=int(session_key)),
         "drivers": client.get("drivers", session_key=int(session_key)),
-        "laps": client.get("laps", session_key=int(session_key)),
-        "pit": client.get("pit", session_key=int(session_key)),
+        "laps": collections["laps"],
+        "pit": collections["pit"],
         "starting_grid": starting_grid,
         "optional_collection_errors": optional_collection_errors,
         "provenance": list(client.provenance),
