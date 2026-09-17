@@ -6,6 +6,8 @@ import pandas as pd
 from f1_research.lap_intelligence import LapModelSpec, build_lap_dataset
 from f1_research.lap_mixture import attach_regime_labels
 from f1_research.lap_strict import STRICT_FEATURES, fit_strict_mixture, predict_live_strict
+from f1_research.live_intelligence import combined_live_report
+from f1_research.strategy import SimulationConfig
 
 
 def _dataset(session_key: int, day: int) -> pd.DataFrame:
@@ -65,6 +67,42 @@ def _specs():
     return (LapModelSpec("hist_gradient_boosting", {"max_iter": 25, "min_samples_leaf": 5}),)
 
 
+def _live_state():
+    return {
+        "session_key": 999,
+        "current_lap": 13,
+        "flag": "GREEN",
+        "safety_car": None,
+        "weather": {
+            "air_temperature_c": 23.0,
+            "track_temperature_c": 36.0,
+            "humidity_pct": 50.0,
+            "rainfall": False,
+        },
+        "drivers": [
+            {
+                "driver_number": driver,
+                "acronym": f"D{driver}",
+                "position": driver,
+                "gap_to_leader_s": 0.0 if driver == 1 else 2.5 * (driver - 1),
+                "lap_number": 13,
+                "recent_laps_s": [
+                    89.0 + driver * 0.1,
+                    89.05 + driver * 0.1,
+                    89.02 + driver * 0.1,
+                    89.08 + driver * 0.1,
+                ],
+                "last_lap_s": 89.08 + driver * 0.1,
+                "compound": "HARD",
+                "tyre_age": 3,
+                "stint_number": 2,
+                "pit_stops": 1,
+            }
+            for driver in range(1, 4)
+        ],
+    }
+
+
 def test_strict_artifact_excludes_retrospective_stint_features_and_has_baselines():
     datasets = [_dataset(501 + index, index * 7) for index in range(4)]
     artifact, metrics, audit = fit_strict_mixture(datasets, specs=_specs())
@@ -97,35 +135,7 @@ def test_mutating_retrospective_stint_columns_cannot_change_strict_benchmark():
 def test_strict_live_probabilities_are_coherent():
     datasets = [_dataset(701 + index, index * 7) for index in range(4)]
     artifact, _, _ = fit_strict_mixture(datasets, specs=_specs())
-    state = {
-        "current_lap": 13,
-        "flag": "GREEN",
-        "safety_car": None,
-        "weather": {
-            "air_temperature_c": 23.0,
-            "track_temperature_c": 36.0,
-            "humidity_pct": 50.0,
-            "rainfall": False,
-        },
-        "drivers": [
-            {
-                "driver_number": driver,
-                "lap_number": 13,
-                "recent_laps_s": [
-                    89.0 + driver * 0.1,
-                    89.05 + driver * 0.1,
-                    89.02 + driver * 0.1,
-                    89.08 + driver * 0.1,
-                ],
-                "compound": "HARD",
-                "tyre_age": 3,
-                "stint_number": 2,
-                "pit_stops": 1,
-            }
-            for driver in range(1, 4)
-        ],
-    }
-    predicted = predict_live_strict(artifact, state)
+    predicted = predict_live_strict(artifact, _live_state())
     assert len(predicted) == 3
     np.testing.assert_allclose(
         predicted[["p_green", "p_neutralized", "p_pit"]].sum(axis=1).to_numpy(),
@@ -135,3 +145,22 @@ def test_strict_live_probabilities_are_coherent():
     assert (predicted.green_lap_lower_s < predicted.predicted_green_lap_s).all()
     assert (predicted.predicted_green_lap_s < predicted.green_lap_upper_s).all()
     assert predicted.feature_policy.eq("strict_asof_only").all()
+
+
+def test_strict_pace_drives_race_simulation_and_is_exposed_in_audit():
+    datasets = [_dataset(801 + index, index * 7) for index in range(4)]
+    artifact, _, _ = fit_strict_mixture(datasets, specs=_specs())
+    config = SimulationConfig(
+        samples=1000,
+        seed=11,
+        safety_car_hazard_per_lap=0.0,
+        dnf_hazard_per_lap=0.0,
+    )
+    report = combined_live_report(_live_state(), 18, artifact, config)
+    assert len(report["pace_predictions"]) == 3
+    assert report["pace_model"]["selected_regressor"] == artifact["selected_regressor"]
+    assert report["pace_model"]["override_drivers"] == [1, 2, 3]
+    assert set(report["audit"]["pace_sources"].values()) == {"strict_next_lap_conformal"}
+    assert sum(row["win_probability"] for row in report["predictions"]) == np.testing.assert_allclose(
+        sum(row["win_probability"] for row in report["predictions"]), 1.0, atol=1e-10
+    )
