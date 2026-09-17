@@ -68,9 +68,17 @@ def build_release(
     training_data_sha = _sha256_bytes(
         train.sort_values(["date", "event_id", "driver"]).to_csv(index=False).encode()
     )
-    calibration_sha = _sha256_bytes(
-        json.dumps(audit["temperatures"], sort_keys=True, separators=(",", ":")).encode()
-    )
+    calibration_payload = {
+        "schema_version": 1,
+        "temperatures": audit["temperatures"],
+        "selected_model": f"modern::{spec.name}",
+    }
+    calibration_raw = json.dumps(
+        calibration_payload, sort_keys=True, separators=(",", ":")
+    ).encode()
+    calibration_path = output / "calibration.json"
+    calibration_path.write_text(json.dumps(calibration_payload, indent=2), encoding="utf-8")
+    calibration_sha = _sha256_bytes(calibration_raw)
     trained_until = pd.to_datetime(train["date"], utc=True).max().isoformat()
     manifest = ModelManifest(
         schema_version=1,
@@ -90,6 +98,7 @@ def build_release(
         "benchmark": str(benchmark_dir / "report.json"),
         "model": str(model_path),
         "manifest": str(manifest_path),
+        "calibration": str(calibration_path),
         "model_id": manifest.model_id,
         "sealed_test_events": report["test_events"],
         "run_id": report["run_id"],
