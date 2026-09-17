@@ -28,12 +28,21 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
         1, "rank-v1", _sha(b"model"), _sha(b"features"), _sha(b"data"),
         _sha(b"calibration"), "2026-03-01T00:00:00Z", "sealed-1", "abc123",
     ))
-    return truth, benchmark, manifest, model
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text(json.dumps({
+        "topic": "position",
+        "received_at": "2026-03-08T05:00:00Z",
+        "payload": {
+            "date": "2026-03-08T05:00:00Z", "session_key": 1,
+            "driver_number": 1, "position": 1,
+        },
+    }) + "\\n")
+    return truth, benchmark, manifest, model, replay
 
 
 def test_production_gate_can_pass_complete_evidence(tmp_path):
-    truth, benchmark, manifest, model = _files(tmp_path)
-    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model)
+    truth, benchmark, manifest, model, replay = _files(tmp_path)
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, replay_capture=replay)
     assert result["production_ready"] is True
 
 
