@@ -15,6 +15,8 @@ def _check_data_truth(path: Path) -> tuple[bool, str]:
     events = report.get("events")
     if report.get("matrix_schema_version") != 1 or not isinstance(events, list) or not events:
         return False, "invalid/empty data-truth matrix"
+    if len(events) < 12:
+        return False, f"only {len(events)} real audited events; require at least 12"
     failures = [e for e in events if e.get("verification_status") == "FAIL"]
     if failures:
         return False, f"{len(failures)} audited events failed"
