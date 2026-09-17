@@ -33,6 +33,27 @@ def _state(updated_at: str | None = None):
     }
 
 
+def _evidence():
+    return {
+        "schema_version": 1,
+        "evidence_kind": "retrospective_sealed_historical_benchmark",
+        "benchmark_run_id": "abc123",
+        "provider": "Jolpica",
+        "years": [2022, 2023, 2024, 2025, 2026],
+        "protocol": "fit -> tuning -> calibration -> sealed test",
+        "sealed_test_events": 12,
+        "sealed_test_event_ids": [f"R{i}" for i in range(12)],
+        "selected_modern": {"name": "catboost", "params": {"depth": 4}},
+        "ensemble_weights": {"modern": 0.75, "qualifying": 0.25, "pl": 0.0},
+        "models": [
+            {"model": "rank_ensemble", "winner_log_loss": 1.08, "position_mae": 3.19},
+            {"model": "qualifying_order", "winner_log_loss": 1.30, "position_mae": 3.14},
+        ],
+        "uncertainty": None,
+        "limitations": ["Retrospective evidence is not a prospective guarantee."],
+    }
+
+
 @pytest.fixture
 def gateway_files(tmp_path, monkeypatch):
     state_path = tmp_path / "state.json"
@@ -74,6 +95,7 @@ def gateway_files(tmp_path, monkeypatch):
     monkeypatch.setenv("F1_LIVE_MANIFEST_PATH", str(manifest_path))
     monkeypatch.setenv("F1_STRICT_MODEL_PATH", str(tmp_path / "missing-model.joblib"))
     monkeypatch.setenv("F1_STRATEGY_PRIORS_PATH", str(tmp_path / "missing-priors.json"))
+    monkeypatch.setenv("F1_MODEL_EVIDENCE_PATH", str(tmp_path / "model_evidence.json"))
     monkeypatch.delenv("F1_API_TOKEN", raising=False)
     live_api._artifact_cache["key"] = None
     live_api._artifact_cache["value"] = None
@@ -110,12 +132,13 @@ def test_telemetry_tail_filters_driver_and_ignores_malformed_lines(gateway_files
     assert all(row["date"] for row in samples)
 
 
-def test_healthz_exposes_transport_and_state_freshness(gateway_files):
+def test_healthz_exposes_transport_state_and_evidence_availability(gateway_files):
     response = live_api.healthz(None)
     payload = json.loads(response.body)
     assert payload["ok"] is True
     assert payload["strict_model"] is False
     assert payload["strategy_priors"] is False
+    assert payload["model_evidence"] is False
     assert payload["session_key"] == 99
     assert payload["current_lap"] == 5
     assert payload["connection_state"] == "connected"
@@ -137,3 +160,28 @@ def test_healthz_does_not_call_stale_transport_healthy(gateway_files):
     assert payload["connection_state"] == "connected"
     assert payload["last_message_age_s"] >= 59
     assert payload["live_stream_healthy"] is False
+
+
+def test_evidence_endpoint_returns_valid_sealed_artifact(gateway_files):
+    path = live_api._evidence_path()
+    path.write_text(json.dumps(_evidence()), encoding="utf-8")
+    payload = json.loads(live_api.evidence(None).body)
+    assert payload["sealed_test_events"] == 12
+    assert payload["selected_modern"]["name"] == "catboost"
+    assert payload["models"][0]["model"] == "rank_ensemble"
+    health = json.loads(live_api.healthz(None).body)
+    assert health["model_evidence"] is True
+
+
+def test_evidence_endpoint_reports_missing_artifact(gateway_files):
+    with pytest.raises(HTTPException) as exc:
+        live_api.evidence(None)
+    assert exc.value.status_code == 404
+
+
+def test_evidence_endpoint_rejects_malformed_schema(gateway_files):
+    path = live_api._evidence_path()
+    path.write_text(json.dumps({"schema_version": 999}), encoding="utf-8")
+    with pytest.raises(HTTPException) as exc:
+        live_api.evidence(None)
+    assert exc.value.status_code == 503
