@@ -1,0 +1,46 @@
+name: Worker image checks
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile.worker'
+      - 'compose.live.yaml'
+      - '.dockerignore'
+      - 'pyproject.toml'
+      - 'src/**'
+      - '.github/workflows/worker-image.yml'
+  push:
+    branches:
+      - feature/live-race-intelligence
+    paths:
+      - 'Dockerfile.worker'
+      - 'compose.live.yaml'
+      - '.dockerignore'
+      - 'pyproject.toml'
+      - 'src/**'
+      - '.github/workflows/worker-image.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose configuration
+        env:
+          OPENF1_TOKEN: ci-placeholder
+          F1_API_TOKEN: ci-placeholder
+        run: docker compose -f compose.live.yaml config --quiet
+      - name: Build persistent worker image
+        run: docker build -f Dockerfile.worker -t f1-race-worker:ci .
+      - name: Smoke-test installed entrypoints
+        run: |
+          docker run --rm --entrypoint sh f1-race-worker:ci -c \
+            'command -v f1-api && command -v f1-live && command -v f1-openf1-doctor'
