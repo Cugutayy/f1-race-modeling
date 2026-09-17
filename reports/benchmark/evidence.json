@@ -1,0 +1,765 @@
+{
+  "schema_version": 1,
+  "series": "f1",
+  "data_kind": "historical",
+  "run_id": "c42ff8e187a06d63",
+  "forecast_origin": "post-qualifying retrospective event-cutoff; qualifying order, not final race grid",
+  "summary": [
+    {
+      "model": "gradient_boosting",
+      "position_mae": 3.281578947368421,
+      "winner_log_loss": 1.592648247901195,
+      "winner_brier": 0.6339814099615846,
+      "winner_accuracy": 0.5,
+      "podium_recall": 0.6238095238095238
+    },
+    {
+      "model": "qualifying_order",
+      "position_mae": 3.2766917293233084,
+      "winner_log_loss": 1.6654250822102175,
+      "winner_brier": 0.6744317256528933,
+      "winner_accuracy": 0.6142857142857143,
+      "podium_recall": 0.6666666666666666
+    },
+    {
+      "model": "recent_form",
+      "position_mae": 3.9955639097744355,
+      "winner_log_loss": 1.9302556764277,
+      "winner_brier": 0.6694811897700876,
+      "winner_accuracy": 0.45714285714285713,
+      "podium_recall": 0.5428571428571428
+    },
+    {
+      "model": "ridge_rank",
+      "position_mae": 3.3188721804511276,
+      "winner_log_loss": 1.4150067186391841,
+      "winner_brier": 0.5930187991227865,
+      "winner_accuracy": 0.5142857142857142,
+      "podium_recall": 0.6238095238095238
+    },
+    {
+      "model": "uniform",
+      "position_mae": 7.167894736842105,
+      "winner_log_loss": 2.9942667508572036,
+      "winner_brier": 0.9499248120300748,
+      "winner_accuracy": 0.0,
+      "podium_recall": 0.05238095238095238
+    }
+  ],
+  "provenance": {
+    "provider": "Jolpica",
+    "requests": [
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/results/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:15.362293+00:00",
+        "sha256": "496281da2416a2c56837f58680621203c43f316d58e2ebbd7bc7ebc0a0135c1a"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/results/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:16.476211+00:00",
+        "sha256": "6c7a0acb66fec61f94861ccc8b740110664f0dc0ffbcd498ed08f691902258e1"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/results/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:17.730889+00:00",
+        "sha256": "e35b17c7c537fbb204e313c65221675db97ee6055c7d415b3628e594f858f232"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/results/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:19.066454+00:00",
+        "sha256": "3e173b27277798ad3d3c05421c4c229bbc5f4a26d23ecb216f59efffd8295a8b"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/results/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:32:20.094054+00:00",
+        "sha256": "931acf837864ed1cd3260a5890cad3ef1335a1276ceec280b11ccea9c5422da7"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/qualifying/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:21.260379+00:00",
+        "sha256": "d32f1051c331a04caadd52e4ee6204ff8a18063a2bd5a26e76b4ab629a633984"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/qualifying/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:22.444440+00:00",
+        "sha256": "8caf658e5f493647944f5ef400d923aabeb7f89835a779b5108f49d3c67eee8c"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/qualifying/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:23.686641+00:00",
+        "sha256": "b590b12f3498e0772195e9f18cea74de2bd6baae22d0edf2c77a336300aabca7"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/qualifying/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:24.930984+00:00",
+        "sha256": "f4dda34aefde55ed682946955543e459b4a5a1dc1b73f00719cfd6474154b369"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2022/qualifying/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:32:25.983786+00:00",
+        "sha256": "2c4f5c61bc163651ad26f66703c882aa5ec7f70f02182bd81b21e0a223f5e74f"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/results/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:27.103257+00:00",
+        "sha256": "747cd2b57e8d2385dc855dd606c5ffd8759c53bf35326c8aeabd0ce378642e48"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/results/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:28.248847+00:00",
+        "sha256": "74d030d4df8504fa20e5cff83574bbc51014f65c7d687d96193a775ec6b675b5"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/results/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:29.375603+00:00",
+        "sha256": "e659976a79132cddaa71bc79cd7d8ed7672a134d9211a39a691c510fc5dd6572"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/results/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:30.468707+00:00",
+        "sha256": "c14d2a3edce54cd78620b8ffe75324e810e79b65126a44f1881aa02c78b57303"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/results/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:32:31.499521+00:00",
+        "sha256": "e79450de6f7acd28317544693da8d6e1694fac67c2d2efbb483e53309b6c1a20"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/qualifying/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:32.684755+00:00",
+        "sha256": "f79145122a23baa1b8e174a82ee486c4f8d969375c14999616b6c2f098141503"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/qualifying/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:33.877327+00:00",
+        "sha256": "6c49064888bdbef16b59aa17877a5e6aff6b3206fa082796aae3806323362a80"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/qualifying/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:35.103337+00:00",
+        "sha256": "73aa2d96b841a6a666ee80d4a6b50ad01534e076fa6d823a2b2103d2ed3d882c"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/qualifying/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:36.459511+00:00",
+        "sha256": "061accdabf069e328392a039a0efee8b55e27da06e3af0e5a27330ac75ae0f77"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2023/qualifying/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:32:37.591680+00:00",
+        "sha256": "6f9e164bed937db942e478784ef695bae9d0b5b8799fae4d3bcc2c70b235ff17"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/results/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:38.701028+00:00",
+        "sha256": "ff418afc8dfadc7c0db4b603050dbc6bdf8ad0e7125705ae3b2d28f2198e483f"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/results/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:39.928941+00:00",
+        "sha256": "f627b7f2d67135cbdf105fff87e17d1682fdb56835d1e49e72d3515b0b312248"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/results/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:41.211801+00:00",
+        "sha256": "ed5cae14c0880bdfc0c0365d07ed2bb4b709918a607ef2484b19beb366b9c8d9"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/results/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:42.333609+00:00",
+        "sha256": "d7f3adf3f697ef5bc6d5a7aee6e602ca9b7531b875d67705cb9f2a45283ee81b"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/results/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:32:43.433535+00:00",
+        "sha256": "691d68ad96dfe26c15256d1a069ffc817c965b664abad36d3c93a6636d4be71e"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/qualifying/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:44.678811+00:00",
+        "sha256": "5567558d5148265aef8dc1d66c928c31246fd9d10a348cb4f50ca97499753870"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/qualifying/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:45.841651+00:00",
+        "sha256": "2edfbb59618867e7390622d03e14a9dd98c805f508843d1f7d24945e75542ccb"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/qualifying/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:47.013131+00:00",
+        "sha256": "8d1f28e9e1f872632ed0a9a7a8628d5f3c588bf9b6ae19e5142cd7867c76c7e2"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/qualifying/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:48.141400+00:00",
+        "sha256": "d4451c4a6510e355d4e591d32ce6b2588866c0849182b574da8935e0360e4565"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2024/qualifying/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:32:49.234484+00:00",
+        "sha256": "db65e733a280e3b01485d2d9a069644236bf60edf7b730b53b0ede336cf51a37"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/results/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:50.344468+00:00",
+        "sha256": "4d77bf05aa80b4125456593b7e1a19b9ade784e704312b9c5d439bb2a1527653"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/results/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:51.483037+00:00",
+        "sha256": "4fccbb240a142d5656eacfc4748a84048a0e213b51b73c08a8dbea42c9d37cf1"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/results/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:52.576399+00:00",
+        "sha256": "2a69367cf27aca186204241475ed0b674fec9206da3d8f6fa1a32f1f4ae0445b"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/results/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:53.701076+00:00",
+        "sha256": "320dd14fcc23fc2ba0af152ec0721586a5cfd706141ec78cebd829ac502594fc"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/results/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:32:54.795156+00:00",
+        "sha256": "dde68f29f471722fbf61a16a91364875288963cf96890968993f4486c496cc40"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/qualifying/?limit=100&offset=0",
+        "retrieved_at": "2026-09-16T08:32:56.232974+00:00",
+        "sha256": "fd552568aa61478373c9a56fc270dc0c961b54fbaa241483ea98ab3ae8d59256"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/qualifying/?limit=100&offset=100",
+        "retrieved_at": "2026-09-16T08:32:57.404367+00:00",
+        "sha256": "3b0f707f9b0e034d717ac202f2e7fb12ce2176bf145342cd14527e0f2dc121d7"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/qualifying/?limit=100&offset=200",
+        "retrieved_at": "2026-09-16T08:32:58.726541+00:00",
+        "sha256": "db9a6b903fd71c3a427f38661f6076a4d5bffc94712e600cc314eb94fa51976a"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/qualifying/?limit=100&offset=300",
+        "retrieved_at": "2026-09-16T08:32:59.973369+00:00",
+        "sha256": "3016c83a143ad398b1f8b08caf211bc253abb2271f8794fd3160adc38f447c98"
+      },
+      {
+        "url": "https://api.jolpi.ca/ergast/f1/2025/qualifying/?limit=100&offset=400",
+        "retrieved_at": "2026-09-16T08:33:01.095023+00:00",
+        "sha256": "526116c93cab29e7f6d968159c9dae00c6a303b88c22ab6ce6956f49973c5e6b"
+      }
+    ],
+    "years": [
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "qualifying_time_basis": "Q1",
+    "publication_timestamps_available": false,
+    "data_sha256": "5bf866087aa2b4711cfa8892cb02158c21a39b9588099249e97ede14f8492d08",
+    "prediction_sha256": "ef67894e4c12f74575af8b726fe26259e1cd2a81ca563fef332372af4489f90b"
+  },
+  "limitations": [
+    "Retrospective source snapshots lack historical publication/revision timestamps; not a strict as-published backtest.",
+    "Result entrants define historical fields; withdrawals before race and later disqualifications may change membership.",
+    "No target-race weather, race telemetry, final grid penalties or sprint points are predictive inputs.",
+    "Qualifying gap uses Q1 where supplied by collector; wet/evolving Q1 conditions remain a confounder.",
+    "Rank regression parameterizes a Plackett-Luce distribution; it is not a maximum-likelihood PL estimator.",
+    "Temperature uses a small earlier holdout; calibrated is a procedure, not a claim of demonstrated reliability.",
+    "Podium/top10/intervals use 4096 fixed-seed PL simulations; expected rank and winner probabilities are analytic.",
+    "Uniform rank metrics use alphabetical tie order and are not meaningful as a ranking benchmark.",
+    "Race bootstrap is descriptive and ignores serial dependence; no significance or prospective guarantee is claimed.",
+    "Hyperparameters are fixed; tuning after seeing this report requires a new untouched holdout."
+  ],
+  "features": [
+    "team",
+    "circuit",
+    "quali_position",
+    "quali_gap_pct",
+    "driver_form",
+    "team_form",
+    "driver_dnf_rate",
+    "driver_points_before",
+    "team_points_before",
+    "circuit_form",
+    "history_count"
+  ],
+  "seed": 42,
+  "events": 92,
+  "test_events": 70,
+  "bootstrap_95pct": {
+    "gradient_boosting": {
+      "position_mae": [
+        3.0515432330827075,
+        3.5320338345864655
+      ],
+      "winner_log_loss": [
+        1.1702103234858912,
+        2.1319596885131364
+      ],
+      "winner_brier": [
+        0.5244609337703787,
+        0.7402182966304156
+      ],
+      "winner_accuracy": [
+        0.38571428571428573,
+        0.6142857142857143
+      ],
+      "podium_recall": [
+        0.5714285714285714,
+        0.676190476190476
+      ]
+    },
+    "qualifying_order": {
+      "position_mae": [
+        3.025922932330827,
+        3.5252781954887205
+      ],
+      "winner_log_loss": [
+        1.2410948418483847,
+        2.160714572626752
+      ],
+      "winner_brier": [
+        0.5465915666618489,
+        0.8112210013500304
+      ],
+      "winner_accuracy": [
+        0.5,
+        0.7285714285714285
+      ],
+      "podium_recall": [
+        0.6142857142857144,
+        0.7190476190476187
+      ]
+    },
+    "recent_form": {
+      "position_mae": [
+        3.7539248120300743,
+        4.250830827067668
+      ],
+      "winner_log_loss": [
+        1.3238499694883896,
+        2.7614691909868903
+      ],
+      "winner_brier": [
+        0.5624905743164639,
+        0.782532781728724
+      ],
+      "winner_accuracy": [
+        0.34285714285714286,
+        0.5714285714285714
+      ],
+      "podium_recall": [
+        0.4952380952380951,
+        0.5952380952380953
+      ]
+    },
+    "ridge_rank": {
+      "position_mae": [
+        3.0742819548872187,
+        3.5601033834586464
+      ],
+      "winner_log_loss": [
+        1.0392107460032836,
+        1.8158462891033156
+      ],
+      "winner_brier": [
+        0.47589040271687577,
+        0.7177738372272904
+      ],
+      "winner_accuracy": [
+        0.38571428571428573,
+        0.6285714285714286
+      ],
+      "podium_recall": [
+        0.5714285714285715,
+        0.6761904761904758
+      ]
+    },
+    "uniform": {
+      "position_mae": [
+        6.996759398496241,
+        7.33654887218045
+      ],
+      "winner_log_loss": [
+        2.9920684668120217,
+        2.99573227355399
+      ],
+      "winner_brier": [
+        0.9498120300751889,
+        0.9500000000000012
+      ],
+      "winner_accuracy": [
+        0.0,
+        0.0
+      ],
+      "podium_recall": [
+        0.023809523809523808,
+        0.08095238095238093
+      ]
+    }
+  },
+  "paired_logloss_vs_qualifying": {
+    "gradient_boosting": {
+      "mean": -0.07277683430902242,
+      "interval_95": [
+        -0.5767509739528953,
+        0.4349241313943009
+      ]
+    },
+    "recent_form": {
+      "mean": 0.2648305942174825,
+      "interval_95": [
+        -0.5483822890274181,
+        1.2012049169344874
+      ]
+    },
+    "ridge_rank": {
+      "mean": -0.25041836357103314,
+      "interval_95": [
+        -0.7554003830152746,
+        0.2959405959762693
+      ]
+    },
+    "uniform": {
+      "mean": 1.3288416686469864,
+      "interval_95": [
+        0.8395458735383903,
+        1.7512846649799079
+      ]
+    }
+  },
+  "reliability_bins": [
+    {
+      "model": "gradient_boosting",
+      "lower": 0.0,
+      "upper": 0.1,
+      "count": 1204,
+      "mean_probability": 0.007381468253053518,
+      "observed_win_rate": 0.008305647840531562
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.1,
+      "upper": 0.2,
+      "count": 87,
+      "mean_probability": 0.14590004641329044,
+      "observed_win_rate": 0.14942528735632185
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.2,
+      "upper": 0.30000000000000004,
+      "count": 33,
+      "mean_probability": 0.23694237026265377,
+      "observed_win_rate": 0.30303030303030304
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.30000000000000004,
+      "upper": 0.4,
+      "count": 24,
+      "mean_probability": 0.35364698586127136,
+      "observed_win_rate": 0.2916666666666667
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.4,
+      "upper": 0.5,
+      "count": 15,
+      "mean_probability": 0.46179908289353117,
+      "observed_win_rate": 0.4666666666666667
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.5,
+      "upper": 0.6000000000000001,
+      "count": 14,
+      "mean_probability": 0.5420645232306671,
+      "observed_win_rate": 0.6428571428571429
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.6000000000000001,
+      "upper": 0.7000000000000001,
+      "count": 5,
+      "mean_probability": 0.6193416481823724,
+      "observed_win_rate": 0.2
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.7000000000000001,
+      "upper": 0.8,
+      "count": 3,
+      "mean_probability": 0.7782725066721076,
+      "observed_win_rate": 1.0
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.8,
+      "upper": 0.9,
+      "count": 4,
+      "mean_probability": 0.8498316333349142,
+      "observed_win_rate": 0.75
+    },
+    {
+      "model": "gradient_boosting",
+      "lower": 0.9,
+      "upper": 1.0,
+      "count": 9,
+      "mean_probability": 0.9740044936810034,
+      "observed_win_rate": 0.7777777777777778
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.0,
+      "upper": 0.1,
+      "count": 1225,
+      "mean_probability": 0.007959000894558844,
+      "observed_win_rate": 0.012244897959183673
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.1,
+      "upper": 0.2,
+      "count": 64,
+      "mean_probability": 0.14254235224703435,
+      "observed_win_rate": 0.0625
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.2,
+      "upper": 0.30000000000000004,
+      "count": 46,
+      "mean_probability": 0.2394998758134328,
+      "observed_win_rate": 0.32608695652173914
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.30000000000000004,
+      "upper": 0.4,
+      "count": 8,
+      "mean_probability": 0.347673190632575,
+      "observed_win_rate": 0.75
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.4,
+      "upper": 0.5,
+      "count": 10,
+      "mean_probability": 0.45221898092868323,
+      "observed_win_rate": 0.5
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.5,
+      "upper": 0.6000000000000001,
+      "count": 12,
+      "mean_probability": 0.5184052489675323,
+      "observed_win_rate": 0.5
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.6000000000000001,
+      "upper": 0.7000000000000001,
+      "count": 9,
+      "mean_probability": 0.6790677032234327,
+      "observed_win_rate": 0.5555555555555556
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.7000000000000001,
+      "upper": 0.8,
+      "count": 12,
+      "mean_probability": 0.7882909504546127,
+      "observed_win_rate": 0.5833333333333334
+    },
+    {
+      "model": "qualifying_order",
+      "lower": 0.9,
+      "upper": 1.0,
+      "count": 12,
+      "mean_probability": 0.9179150013761013,
+      "observed_win_rate": 0.5833333333333334
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.0,
+      "upper": 0.1,
+      "count": 1194,
+      "mean_probability": 0.010255260288617328,
+      "observed_win_rate": 0.009212730318257957
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.1,
+      "upper": 0.2,
+      "count": 104,
+      "mean_probability": 0.1467055742154439,
+      "observed_win_rate": 0.21153846153846154
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.2,
+      "upper": 0.30000000000000004,
+      "count": 47,
+      "mean_probability": 0.23768416937184106,
+      "observed_win_rate": 0.1702127659574468
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.30000000000000004,
+      "upper": 0.4,
+      "count": 18,
+      "mean_probability": 0.35157205402375036,
+      "observed_win_rate": 0.3333333333333333
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.4,
+      "upper": 0.5,
+      "count": 10,
+      "mean_probability": 0.4405701191640401,
+      "observed_win_rate": 0.4
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.5,
+      "upper": 0.6000000000000001,
+      "count": 6,
+      "mean_probability": 0.5139422987793449,
+      "observed_win_rate": 0.6666666666666666
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.6000000000000001,
+      "upper": 0.7000000000000001,
+      "count": 2,
+      "mean_probability": 0.6539479386905331,
+      "observed_win_rate": 1.0
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.7000000000000001,
+      "upper": 0.8,
+      "count": 2,
+      "mean_probability": 0.7640508823698783,
+      "observed_win_rate": 0.0
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.8,
+      "upper": 0.9,
+      "count": 1,
+      "mean_probability": 0.8425372709496264,
+      "observed_win_rate": 1.0
+    },
+    {
+      "model": "recent_form",
+      "lower": 0.9,
+      "upper": 1.0,
+      "count": 14,
+      "mean_probability": 0.9878926190495528,
+      "observed_win_rate": 0.8571428571428571
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.0,
+      "upper": 0.1,
+      "count": 1238,
+      "mean_probability": 0.008924649068394781,
+      "observed_win_rate": 0.009693053311793215
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.1,
+      "upper": 0.2,
+      "count": 64,
+      "mean_probability": 0.13936264806823287,
+      "observed_win_rate": 0.171875
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.2,
+      "upper": 0.30000000000000004,
+      "count": 25,
+      "mean_probability": 0.25109931228437943,
+      "observed_win_rate": 0.36
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.30000000000000004,
+      "upper": 0.4,
+      "count": 22,
+      "mean_probability": 0.3493652858152395,
+      "observed_win_rate": 0.36363636363636365
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.4,
+      "upper": 0.5,
+      "count": 10,
+      "mean_probability": 0.4643808517140616,
+      "observed_win_rate": 0.4
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.5,
+      "upper": 0.6000000000000001,
+      "count": 10,
+      "mean_probability": 0.5630205801627188,
+      "observed_win_rate": 0.4
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.6000000000000001,
+      "upper": 0.7000000000000001,
+      "count": 4,
+      "mean_probability": 0.6467564713288623,
+      "observed_win_rate": 0.25
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.7000000000000001,
+      "upper": 0.8,
+      "count": 3,
+      "mean_probability": 0.765769466528028,
+      "observed_win_rate": 0.6666666666666666
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.8,
+      "upper": 0.9,
+      "count": 5,
+      "mean_probability": 0.8669118263588691,
+      "observed_win_rate": 0.8
+    },
+    {
+      "model": "ridge_rank",
+      "lower": 0.9,
+      "upper": 1.0,
+      "count": 17,
+      "mean_probability": 0.9750381262619932,
+      "observed_win_rate": 0.8823529411764706
+    },
+    {
+      "model": "uniform",
+      "lower": 0.0,
+      "upper": 0.1,
+      "count": 1398,
+      "mean_probability": 0.05007153075822603,
+      "observed_win_rate": 0.05007153075822604
+    }
+  ],
+  "runtime": {
+    "python": "3.12.10",
+    "packages": {
+      "numpy": "2.5.3",
+      "pandas": "2.3.3",
+      "scikit-learn": "1.9.1"
+    },
+    "source_sha256": "7599739ca04c6ed11f0982ba593f565da1e0e4b848b7a19ba1a3653673036a83"
+  }
+}

@@ -1,0 +1,64 @@
+name: Foundation model benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/live-race-intelligence
+    paths:
+      - '.github/workflows/foundation-benchmark.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foundation-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install TabICLv2 benchmark dependencies
+        run: python -m pip install -e '.[foundation,dev]'
+      - name: Collect the same completed 2022-2026 race history
+        run: |
+          python -m f1_research collect \
+            --years 2022 2023 2024 2025 2026 \
+            --output reports/foundation/history.csv \
+            --cache .cache/jolpica
+      - name: Run TabICLv2 on the same sealed protocol
+        run: |
+          python -m f1_research benchmark-v2 \
+            --input reports/foundation/history.csv \
+            --output reports/foundation/benchmark \
+            --test-events 12 \
+            --tuning-events 6 \
+            --calibration-events 4 \
+            --min-fit-events 20 \
+            --models tabicl_v2 \
+            --max-specs-per-model 1
+      - name: Print sealed summary and model selection
+        run: |
+          cat reports/foundation/benchmark/summary.csv
+          echo '--- selection ---'
+          cat reports/foundation/benchmark/selection.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foundation-historical-benchmark-${{ github.sha }}
+          path: |
+            reports/foundation/history.csv
+            reports/foundation/history.provenance.json
+            reports/foundation/benchmark/
+          retention-days: 14

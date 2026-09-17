@@ -1,0 +1,60 @@
+name: OpenF1 network smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: Season to inspect
+        required: true
+        default: '2026'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - name: Fetch one completed OpenF1 race and build event-time dataset
+        env:
+          SMOKE_YEAR: ${{ inputs.year }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from f1_research.openf1_live import OpenF1Client
+          from f1_research.lap_pipeline import collect_session, select_completed_races
+
+          year = int(os.environ['SMOKE_YEAR'])
+          client = OpenF1Client()
+          session = select_completed_races(client, year, 1)[0]
+          dataset, manifest = collect_session(
+              client, session, Path('reports/openf1-smoke'), latency_s=1.0, refresh=True
+          )
+          assert len(dataset) >= 50, f'unexpectedly small dataset: {len(dataset)}'
+          assert dataset.target_valid.any(), 'no valid lap targets'
+          assert dataset.lap_regime.notna().all(), 'missing regime labels'
+          assert {'green', 'pit'} & set(dataset.lap_regime.astype(str)), 'regime labels look empty'
+          print({
+              'session_key': manifest['session_key'],
+              'location': manifest['location'],
+              'rows': manifest['rows'],
+              'regime_counts': manifest['regime_counts'],
+              'sources': {k: {'bytes': v['bytes'], 'sha256': v['sha256']} for k, v in manifest['sources'].items()},
+          })
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: openf1-smoke-${{ inputs.year }}
+          path: reports/openf1-smoke
+          if-no-files-found: error
+          retention-days: 7

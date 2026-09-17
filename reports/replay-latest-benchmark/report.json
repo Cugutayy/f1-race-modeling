@@ -1,0 +1,286 @@
+{
+  "schema_version": 1,
+  "series": "f1",
+  "task": "next_lap_duration_event_time_replay",
+  "data_kind": "historical",
+  "created_at": "2026-09-17T07:41:47.511345+00:00",
+  "source_documentation": "https://openf1.org/docs/",
+  "sources": [
+    {
+      "url": "https://api.openf1.org/v1/sessions?year=2026&session_name=Race",
+      "retrieved_at": "2026-09-17T07:41:27.431555+00:00",
+      "sha256": "52787f06c872631b6530509944e592275bc52d2c01d3ae4d846a59e75e93eb97",
+      "bytes": 8986
+    },
+    {
+      "url": "https://api.openf1.org/v1/laps?session_key=11326",
+      "retrieved_at": "2026-09-17T07:39:26.981682+00:00",
+      "sha256": "34fdc0e568604e4cbff5b69949719e37e4fc261266c9dbc25911ca3ce83bb627",
+      "bytes": 551513
+    },
+    {
+      "url": "https://api.openf1.org/v1/laps?session_key=11334",
+      "retrieved_at": "2026-09-17T07:39:27.889804+00:00",
+      "sha256": "fce692d07e940e5476dbe55bbd335a83880c1b56428102adf6f9e4cced5a010c",
+      "bytes": 438096
+    },
+    {
+      "url": "https://api.openf1.org/v1/laps?session_key=11342",
+      "retrieved_at": "2026-09-17T07:39:28.834494+00:00",
+      "sha256": "42f80e7a2b20ae88499ad15f21d34bc1e9a03cc458b61e724b5bbc2d184eb177",
+      "bytes": 673439
+    },
+    {
+      "url": "https://api.openf1.org/v1/laps?session_key=11353",
+      "retrieved_at": "2026-09-17T07:39:29.907103+00:00",
+      "sha256": "3a092abe66c37309a5096e1277ac75fcc137c0d04e990cb27775607c9b0166b0",
+      "bytes": 656631
+    },
+    {
+      "url": "https://api.openf1.org/v1/laps?session_key=11361",
+      "retrieved_at": "2026-09-17T07:39:30.809794+00:00",
+      "sha256": "3ae8bdde4303ee80ebdf2596ff0b88b86aaa5be8fe1fc9da6c2d6211f6c861ea",
+      "bytes": 495884
+    },
+    {
+      "url": "https://api.openf1.org/v1/laps?session_key=11369",
+      "retrieved_at": "2026-09-17T07:39:31.713559+00:00",
+      "sha256": "87c7db6a829ebb879cc10d1c64b45088c3fcf4ad2891ffa4165171cece3776bc",
+      "bytes": 543773
+    }
+  ],
+  "source_code_sha256": "3102801a3961fef3391222862c3ef8fafc1d74e2ce907c8da30b22757d8ca802",
+  "selection": {
+    "latest_completed": true,
+    "year": 2026,
+    "selection_cutoff_utc": "2026-09-17T07:41:27.433958+00:00",
+    "rule": "last N noncancelled sessions with date_end < cutoff"
+  },
+  "train_sessions": [
+    {
+      "session_key": 11326,
+      "session_type": "Race",
+      "session_name": "Race",
+      "date_start": "2026-07-05T14:00:00+00:00",
+      "date_end": "2026-07-05T16:00:00+00:00",
+      "meeting_key": 1289,
+      "circuit_key": 2,
+      "circuit_short_name": "Silverstone",
+      "country_key": 2,
+      "country_code": "GBR",
+      "country_name": "United Kingdom",
+      "location": "Silverstone",
+      "gmt_offset": "01:00:00",
+      "year": 2026,
+      "is_cancelled": false
+    },
+    {
+      "session_key": 11334,
+      "session_type": "Race",
+      "session_name": "Race",
+      "date_start": "2026-07-19T13:00:00+00:00",
+      "date_end": "2026-07-19T15:00:00+00:00",
+      "meeting_key": 1290,
+      "circuit_key": 7,
+      "circuit_short_name": "Spa-Francorchamps",
+      "country_key": 16,
+      "country_code": "BEL",
+      "country_name": "Belgium",
+      "location": "Spa-Francorchamps",
+      "gmt_offset": "02:00:00",
+      "year": 2026,
+      "is_cancelled": false
+    },
+    {
+      "session_key": 11342,
+      "session_type": "Race",
+      "session_name": "Race",
+      "date_start": "2026-07-26T13:00:00+00:00",
+      "date_end": "2026-07-26T15:00:00+00:00",
+      "meeting_key": 1291,
+      "circuit_key": 4,
+      "circuit_short_name": "Hungaroring",
+      "country_key": 14,
+      "country_code": "HUN",
+      "country_name": "Hungary",
+      "location": "Budapest",
+      "gmt_offset": "02:00:00",
+      "year": 2026,
+      "is_cancelled": false
+    },
+    {
+      "session_key": 11353,
+      "session_type": "Race",
+      "session_name": "Race",
+      "date_start": "2026-08-23T13:00:00+00:00",
+      "date_end": "2026-08-23T15:00:00+00:00",
+      "meeting_key": 1292,
+      "circuit_key": 55,
+      "circuit_short_name": "Zandvoort",
+      "country_key": 133,
+      "country_code": "NED",
+      "country_name": "Netherlands",
+      "location": "Zandvoort",
+      "gmt_offset": "02:00:00",
+      "year": 2026,
+      "is_cancelled": false
+    }
+  ],
+  "validation_session": {
+    "session_key": 11361,
+    "session_type": "Race",
+    "session_name": "Race",
+    "date_start": "2026-09-06T13:00:00+00:00",
+    "date_end": "2026-09-06T15:00:00+00:00",
+    "meeting_key": 1293,
+    "circuit_key": 39,
+    "circuit_short_name": "Monza",
+    "country_key": 13,
+    "country_code": "ITA",
+    "country_name": "Italy",
+    "location": "Monza",
+    "gmt_offset": "02:00:00",
+    "year": 2026,
+    "is_cancelled": false
+  },
+  "test_session": {
+    "session_key": 11369,
+    "session_type": "Race",
+    "session_name": "Race",
+    "date_start": "2026-09-13T13:00:00+00:00",
+    "date_end": "2026-09-13T15:00:00+00:00",
+    "meeting_key": 1294,
+    "circuit_key": 153,
+    "circuit_short_name": "Madring",
+    "country_key": 1,
+    "country_code": "ESP",
+    "country_name": "Spain",
+    "location": "Madrid",
+    "gmt_offset": "02:00:00",
+    "year": 2026,
+    "is_cancelled": false
+  },
+  "selected_alpha": 1000,
+  "tuning": [
+    {
+      "alpha": 1,
+      "model": "ridge",
+      "n": 967,
+      "mae_s": 10.8458293842512,
+      "rmse_s": 25.448850380696392,
+      "median_ae_s": 2.510681940353294,
+      "p90_ae_s": 39.785716511832796
+    },
+    {
+      "alpha": 10,
+      "model": "ridge",
+      "n": 967,
+      "mae_s": 10.800086786590537,
+      "rmse_s": 25.440840095227045,
+      "median_ae_s": 2.429660974363273,
+      "p90_ae_s": 39.76328089734341
+    },
+    {
+      "alpha": 100,
+      "model": "ridge",
+      "n": 967,
+      "mae_s": 10.45767005660015,
+      "rmse_s": 25.38706480213393,
+      "median_ae_s": 1.889298577571111,
+      "p90_ae_s": 39.59574226922176
+    },
+    {
+      "alpha": 1000,
+      "model": "ridge",
+      "n": 967,
+      "mae_s": 9.69978359288637,
+      "rmse_s": 25.295950542279943,
+      "median_ae_s": 0.863209189923154,
+      "p90_ae_s": 39.23565345126839
+    }
+  ],
+  "summary": [
+    {
+      "model": "ridge",
+      "n": 1017,
+      "mae_s": 2.3982793467623984,
+      "rmse_s": 6.361675252289018,
+      "median_ae_s": 0.907166476867161,
+      "p90_ae_s": 3.086202465942028
+    },
+    {
+      "model": "last_lap",
+      "n": 1017,
+      "mae_s": 3.382432645034415,
+      "rmse_s": 8.889037623731053,
+      "median_ae_s": 0.4270000000000067,
+      "p90_ae_s": 9.495399999999997
+    },
+    {
+      "model": "recent_median",
+      "n": 1017,
+      "mae_s": 2.2158874139626357,
+      "rmse_s": 6.309676545232507,
+      "median_ae_s": 0.6019999999999897,
+      "p90_ae_s": 3.3214000000000055
+    }
+  ],
+  "initial_training_labels": 5399,
+  "final_training_labels": 6416,
+  "test_coverage": {
+    "source_rows": 1109,
+    "forecast_rows": 1021,
+    "scored_rows": 1017,
+    "forecast_missing_target": 4,
+    "no_forecast_warmup_or_missing_start": 88
+  },
+  "simulated_latency_s": 1.0,
+  "cutoff_checks": {
+    "features_after_cutoff": 0,
+    "training_labels_after_cutoff": 0,
+    "targets_available_before_forecast": 0
+  },
+  "rows": [
+    {
+      "session_key": 11326,
+      "raw": 1114,
+      "valid_duration": 1111
+    },
+    {
+      "session_key": 11334,
+      "raw": 875,
+      "valid_duration": 871
+    },
+    {
+      "session_key": 11342,
+      "raw": 1432,
+      "valid_duration": 1429
+    },
+    {
+      "session_key": 11353,
+      "raw": 1369,
+      "valid_duration": 1362
+    },
+    {
+      "session_key": 11361,
+      "raw": 1055,
+      "valid_duration": 1052
+    },
+    {
+      "session_key": 11369,
+      "raw": 1109,
+      "valid_duration": 1105
+    }
+  ],
+  "limitations": [
+    "Historical event-time simulation, not verified live data ingestion or service latency.",
+    "OpenF1 is an unofficial F1 source; provider documentation and API verified directly.",
+    "date_start is approximate; available = start + duration + simulated latency, not publication timestamp.",
+    "Free historical API; live access requires paid subscription per provider documentation.",
+    "Next-lap duration only; no winner, pit strategy, DNF or full-race outcome prediction.",
+    "Pit and safety-car laps retained in scoring; absent/invalid durations unscored, three observed laps required.",
+    "Ridge updates after each observed training label, including earlier test-race labels; hyperparameters remain fixed.",
+    "One reserved race is a development evaluation, not a sealed external benchmark; circuits and conditions shift.",
+    "Start events replay historical lap identities; live start detection and corrections still require an ingestion adapter."
+  ]
+}

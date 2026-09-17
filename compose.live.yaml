@@ -1,0 +1,49 @@
+services:
+  capture:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["f1-live", "capture", "--output", "/data/live", "--session-key", "latest"]
+    environment:
+      OPENF1_TOKEN: ${OPENF1_TOKEN:-}
+      OPENF1_USERNAME: ${OPENF1_USERNAME:-}
+      OPENF1_PASSWORD: ${OPENF1_PASSWORD:-}
+    volumes:
+      - live-data:/data/live
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["f1-api"]
+    environment:
+      PORT: "8000"
+      F1_API_TOKEN: ${F1_API_TOKEN:-}
+      F1_LIVE_STATE_PATH: /data/live/state.json
+      F1_LIVE_EVENTS_PATH: /data/live/events.jsonl
+      F1_LIVE_MANIFEST_PATH: /data/live/manifest.json
+      F1_STRICT_MODEL_PATH: /models/next_lap_strict.joblib
+      F1_STRATEGY_PRIORS_PATH: /models/strategy_priors.json
+      F1_MODEL_EVIDENCE_PATH: /models/model_evidence.json
+    volumes:
+      - live-data:/data/live:ro
+      - ./reports/local/lap-strict:/models:ro
+    ports:
+      - "${F1_API_PORT:-8000}:8000"
+    depends_on:
+      - capture
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket; s=socket.create_connection(('127.0.0.1',8000),2); s.close()"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  live-data:

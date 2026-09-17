@@ -1,6 +1,10 @@
 f1_cache/
+data/
+reports/local/
 __pycache__/
 *.pyc
-*.csv
-*.json
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
 .DS_Store
