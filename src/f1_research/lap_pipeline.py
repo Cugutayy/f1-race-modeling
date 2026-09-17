@@ -1,4 +1,4 @@
-"""Collect OpenF1 race-state features and train a reproducible next-lap artifact."""
+"""Collect OpenF1 race-state features and train reproducible next-lap artifacts."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from .lap_intelligence import (
     build_lap_dataset,
     build_lap_estimator,
 )
+from .lap_mixture import attach_regime_labels, fit_mixture
 from .openf1_live import OpenF1Client
 
 ENDPOINTS = ("laps", "stints", "weather", "pit", "race_control")
@@ -75,6 +76,7 @@ def collect_session(client: OpenF1Client, session: dict[str, Any], output: Path,
     )
     if dataset.empty:
         raise ValueError(f"Session {session_key} produced no next-lap training rows")
+    dataset = attach_regime_labels(dataset, data["laps"], data["pit"])
     dataset_path = Path(output) / "datasets" / f"{session_key}.csv"
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     dataset.to_csv(dataset_path, index=False)
@@ -88,12 +90,14 @@ def collect_session(client: OpenF1Client, session: dict[str, Any], output: Path,
         "latency_assumption_s": latency_s,
         "rows": len(dataset),
         "valid_targets": int(dataset.target_valid.sum()),
+        "regime_counts": {str(key): int(value) for key, value in dataset.lap_regime.value_counts().items()},
         "dataset_sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
         "sources": sources,
         "limitations": [
             "OpenF1 date_start is approximate and target availability adds an explicit simulated latency.",
             "Historical stint rows have no publication timestamp, so compound/tyre-age are retrospective features.",
             "Public timing data is not equivalent to team telemetry or tyre/fuel/setup data.",
+            "Unexpected Safety Car/VSC activation mid-lap is not known at the lap-start forecast cutoff.",
         ],
     }
     _write_json(Path(output) / "manifests" / f"{session_key}.json", manifest)
@@ -136,50 +140,68 @@ def train_selected(datasets: list[pd.DataFrame], selected_name: str,
 
 def run(year: int, count: int, output: Path, *, latency_s: float = 1.0,
         include_foundation: bool = False, refresh: bool = False) -> dict[str, Any]:
-    if count < 3:
-        raise ValueError("At least three completed races are required")
+    if count < 4:
+        raise ValueError("At least four completed races are required for fit/tune/calibration/test")
     output = Path(output)
     datasets, manifests = collect_recent(year, count, output, latency_s=latency_s, refresh=refresh)
     specs = _available_specs(include_foundation)
-    metrics, audit = benchmark_lap_models(datasets, specs=specs)
-    selected = str(audit["selected_model"])
-    artifact = train_selected(datasets, selected, specs)
-    artifact_path = output / "next_lap_model.joblib"
+
+    legacy_metrics, legacy_audit = benchmark_lap_models(datasets, specs=specs)
+    legacy_selected = str(legacy_audit["selected_model"])
+    legacy_model = train_selected(datasets, legacy_selected, specs)
+    legacy_path = output / "next_lap_model.joblib"
     joblib.dump({
         "schema_version": 1,
         "task": "next_lap_duration",
-        "model_name": selected,
+        "model_name": legacy_selected,
         "features": FEATURES,
         "trained_through_session": int(datasets[-2].session_key.iloc[0]),
         "sealed_test_session": int(datasets[-1].session_key.iloc[0]),
-        "pipeline": artifact,
-    }, artifact_path)
+        "pipeline": legacy_model,
+    }, legacy_path)
+
+    mixture_artifact, mixture_metrics, mixture_audit = fit_mixture(datasets, specs=specs, alpha=0.10)
+    mixture_path = output / "next_lap_mixture.joblib"
+    joblib.dump(mixture_artifact, mixture_path)
+
     result = {
-        "schema_version": 1,
-        "task": "next_lap_duration",
+        "schema_version": 2,
+        "task": "next_lap_intelligence",
         "year": year,
         "sessions": [manifest["session_key"] for manifest in manifests],
-        "selected_model": selected,
-        "summary": metrics.to_dict("records"),
-        "audit": audit,
-        "artifact": {"path": str(artifact_path),
-                     "sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest()},
+        "selected_model": mixture_artifact["selected_regressor"],
+        "mixture_summary": mixture_metrics.to_dict("records"),
+        "mixture_audit": mixture_audit,
+        "legacy_summary": legacy_metrics.to_dict("records"),
+        "legacy_audit": legacy_audit,
+        "artifacts": {
+            "mixture": {"path": str(mixture_path),
+                        "sha256": hashlib.sha256(mixture_path.read_bytes()).hexdigest()},
+            "single_regressor": {"path": str(legacy_path),
+                                 "sha256": hashlib.sha256(legacy_path.read_bytes()).hexdigest()},
+        },
         "created_at": datetime.now(UTC).isoformat(),
     }
     _write_json(output / "lap_model_report.json", result)
-    metrics.to_csv(output / "lap_model_summary.csv", index=False)
+    mixture_metrics.to_csv(output / "lap_mixture_summary.csv", index=False)
+    legacy_metrics.to_csv(output / "lap_model_summary.csv", index=False)
     return result
 
 
 def load_artifact(path: Path) -> dict[str, Any]:
     artifact = joblib.load(path)
-    if not isinstance(artifact, dict) or artifact.get("task") != "next_lap_duration":
-        raise ValueError("Not a next-lap model artifact")
+    if not isinstance(artifact, dict):
+        raise ValueError("Invalid next-lap artifact")
     if artifact.get("features") != FEATURES:
         raise ValueError("Next-lap feature schema mismatch")
-    if not hasattr(artifact.get("pipeline"), "predict"):
-        raise ValueError("Next-lap artifact has no predictive pipeline")
-    return artifact
+    task = artifact.get("task")
+    if task == "next_lap_duration" and hasattr(artifact.get("pipeline"), "predict"):
+        return artifact
+    if task == "next_lap_mixture":
+        required = {"regime_classifier", "pace_regressor", "classifier_columns", "conformal_radius_s"}
+        if required <= set(artifact):
+            return artifact
+    raise ValueError("Unsupported next-lap artifact")
 
 
 def main(argv=None):
@@ -194,7 +216,8 @@ def main(argv=None):
     report = run(args.year, args.race_count, args.output, latency_s=args.latency_s,
                  include_foundation=args.foundation, refresh=args.refresh)
     print(json.dumps({"selected_model": report["selected_model"],
-                      "sessions": report["sessions"], "summary": report["summary"]}, indent=2))
+                      "sessions": report["sessions"],
+                      "mixture_summary": report["mixture_summary"]}, indent=2))
 
 
 if __name__ == "__main__":
