@@ -116,11 +116,14 @@ def regime_chart(frame: pd.DataFrame) -> alt.Chart | None:
 def main() -> None:
     st.set_page_config(page_title="F1 · Live Pace AI", page_icon="🏁", layout="wide")
     st.title("F1 · Live Pace AI")
-    st.caption("Captured OpenF1 state → local trained model → regime + green-lap forecast. No artifact, no invented prediction.")
+    st.caption(
+        "Captured OpenF1 state → local trained model → regime + green-lap forecast. "
+        "No artifact, no invented prediction.")
 
     with st.sidebar:
         state_path = Path(st.text_input("Live state", os.environ.get("F1_LIVE_STATE_PATH", str(DEFAULT_STATE))))
-        model_path = Path(st.text_input("Next-lap artifact", os.environ.get("F1_LAP_MODEL_PATH", str(DEFAULT_MODEL))))
+        model_path = Path(st.text_input(
+            "Next-lap artifact", os.environ.get("F1_LAP_MODEL_PATH", str(DEFAULT_MODEL))))
         refresh = st.slider("Refresh seconds", 1.0, 10.0, 2.0, 0.5)
         st.code("f1-laps --year 2026 --race-count 8")
         st.caption("Add --foundation to evaluate local TabICLv2 under the same chronological protocol.")
@@ -157,25 +160,35 @@ def main() -> None:
         overview, chart_tab, regime_tab, model_tab = st.tabs(
             ["Next lap", "Pace comparison", "Regime", "Model audit"])
         with overview:
-            display_columns = ["position", "driver", "team", "compound", "tyre_age", "lap_number",
-                               "predicted_next_lap_s", "green_lap_lower_s", "green_lap_upper_s",
-                               "p_green", "p_pit", "p_neutralized", "recent_median_5_s", "last_lap_s",
-                               "model_vs_recent_median_s", "recent_sigma_s"]
+            display_columns = [
+                "position", "driver", "team", "compound", "tyre_age", "lap_number",
+                "predicted_next_lap_s", "green_lap_lower_s", "green_lap_upper_s",
+                "p_green", "p_pit", "p_neutralized", "recent_median_5_s", "last_lap_s",
+                "model_vs_recent_median_s", "recent_sigma_s",
+            ]
             display = frame[[column for column in display_columns if column in frame]].copy()
+            probability_labels = {
+                "p_green": "P(green) %", "p_pit": "P(pit) %", "p_neutralized": "P(neutralized) %",
+            }
+            for source, target in probability_labels.items():
+                if source in display:
+                    display[target] = 100.0 * display.pop(source)
             st.dataframe(display, hide_index=True, width="stretch", column_config={
                 "predicted_next_lap_s": st.column_config.NumberColumn("Green pace", format="%.3fs"),
-                "green_lap_lower_s": st.column_config.NumberColumn("P10-ish lower", format="%.3fs"),
-                "green_lap_upper_s": st.column_config.NumberColumn("P90-ish upper", format="%.3fs"),
-                "p_green": st.column_config.NumberColumn("P(green)", format="%.1f%%"),
-                "p_pit": st.column_config.NumberColumn("P(pit)", format="%.1f%%"),
-                "p_neutralized": st.column_config.NumberColumn("P(neutralized)", format="%.1f%%"),
+                "green_lap_lower_s": st.column_config.NumberColumn("90% lower", format="%.3fs"),
+                "green_lap_upper_s": st.column_config.NumberColumn("90% upper", format="%.3fs"),
+                "P(green) %": st.column_config.NumberColumn("P(green)", format="%.1f%%"),
+                "P(pit) %": st.column_config.NumberColumn("P(pit)", format="%.1f%%"),
+                "P(neutralized) %": st.column_config.NumberColumn("P(neutralized)", format="%.1f%%"),
                 "recent_median_5_s": st.column_config.NumberColumn("5-lap median", format="%.3fs"),
                 "last_lap_s": st.column_config.NumberColumn("Last lap", format="%.3fs"),
                 "model_vs_recent_median_s": st.column_config.NumberColumn("Δ vs median", format="%+.3fs"),
                 "recent_sigma_s": st.column_config.NumberColumn("Recent σ", format="%.3fs"),
             })
             if artifact.get("task") == "next_lap_mixture":
-                st.caption("Green pace interval is split-conformal from a separate calibration race; coverage is empirical, not Gaussian.")
+                st.caption(
+                    "Green pace interval is split-conformal from a separate calibration race; "
+                    "coverage is empirical, not Gaussian.")
             else:
                 st.caption("Legacy artifact has no calibrated interval or regime model.")
 
@@ -194,7 +207,9 @@ def main() -> None:
                 st.info("This artifact does not contain a regime classifier.")
             else:
                 st.altair_chart(chart, width="stretch")
-                st.caption("Pit labels use OpenF1 pit lap_number / pit-out flags. Neutralized means SC/VSC was already active at the forecast cutoff.")
+                st.caption(
+                    "Pit labels use OpenF1 pit lap_number / pit-out flags. Neutralized means SC/VSC "
+                    "was already active at the forecast cutoff.")
 
         with model_tab:
             st.json({
@@ -202,10 +217,14 @@ def main() -> None:
                     "schema_version", "task", "model_name", "selected_regressor",
                     "trained_through_session", "calibration_session", "sealed_test_session",
                     "conformal_alpha", "conformal_radius_s", "features")},
-                "live_state": {"session_key": state.get("session_key"), "updated_at": state.get("updated_at"),
-                               "data_age_s": age, "messages": state.get("received_messages")},
+                "live_state": {
+                    "session_key": state.get("session_key"), "updated_at": state.get("updated_at"),
+                    "data_age_s": age, "messages": state.get("received_messages"),
+                },
             }, expanded=False)
-            st.warning("Historical stint features lack as-published timestamps. Live captured state is stronger evidence than retrospective REST joins.")
+            st.warning(
+                "Historical stint features lack as-published timestamps. Live captured state is stronger "
+                "evidence than retrospective REST joins.")
 
     live_pace()
 
