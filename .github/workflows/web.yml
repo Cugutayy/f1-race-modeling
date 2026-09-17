@@ -4,12 +4,18 @@ on:
   pull_request:
     paths:
       - 'web/**'
+      - 'vercel.json'
+      - '.vercelignore'
       - '.github/workflows/web.yml'
   push:
     branches:
+      - main
       - feature/live-race-intelligence
+      - fix/vercel-root-deploy
     paths:
       - 'web/**'
+      - 'vercel.json'
+      - '.vercelignore'
       - '.github/workflows/web.yml'
 
 permissions:
@@ -22,9 +28,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
     env:
       F1_BACKEND_URL: http://127.0.0.1:8000
       F1_BACKEND_TOKEN: ci-placeholder
@@ -35,6 +38,13 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package.json
-      - run: npm install --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm run build
+      - name: Install web dependencies
+        run: npm install --prefix web --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck --prefix web
+      - name: Next production build
+        run: npm run build --prefix web
+      - name: Vercel root-command smoke test
+        run: |
+          node -e "const c=require('./vercel.json'); if(c.installCommand!=='npm install --prefix web --no-audit --no-fund') process.exit(1); if(c.buildCommand!=='npm run build --prefix web') process.exit(1); if(c.outputDirectory!=='web/.next') process.exit(1)"
+          test -d web/.next
