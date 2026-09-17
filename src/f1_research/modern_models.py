@@ -1,6 +1,6 @@
 """Modern tabular challengers evaluated with whole-event forward validation.
 
-Optional libraries are lazy imports.  A model only earns a place in reports when it
+Optional libraries are lazy imports. A model only earns a place in reports when it
 beats baselines on held-out F1 events; availability or benchmark hype is not treated
 as evidence of F1 performance.
 """
@@ -67,41 +67,59 @@ def available_candidates() -> dict[str, bool]:
     return result
 
 
+def _with_overrides(defaults: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(defaults)
+    merged.update(params)
+    return merged
+
+
 def build_estimator(spec: CandidateSpec, random_state: int = 42) -> Pipeline:
     name, params = spec.name, dict(spec.params)
     if name == "hist_gradient_boosting":
-        learner = HistGradientBoostingRegressor(
-            loss="huber", random_state=random_state, early_stopping=True, **params)
+        settings = _with_overrides({
+            "loss": "huber", "random_state": random_state, "early_stopping": True,
+            "max_iter": 150, "learning_rate": 0.05, "max_leaf_nodes": 15,
+            "l2_regularization": 5.0, "min_samples_leaf": 12,
+        }, params)
+        learner = HistGradientBoostingRegressor(**settings)
     elif name == "extra_trees":
-        learner = ExtraTreesRegressor(
-            n_estimators=400, min_samples_leaf=4, max_features=0.8,
-            n_jobs=-1, random_state=random_state, **params)
+        settings = _with_overrides({
+            "n_estimators": 400, "min_samples_leaf": 4, "max_features": 0.8,
+            "n_jobs": -1, "random_state": random_state,
+        }, params)
+        learner = ExtraTreesRegressor(**settings)
     elif name == "xgboost":
         try:
             from xgboost import XGBRegressor
         except ImportError as exc:
             raise RuntimeError("xgboost is not installed; install .[modern]") from exc
-        learner = XGBRegressor(
-            objective="reg:squarederror", n_estimators=500, learning_rate=0.03,
-            max_depth=3, subsample=0.85, colsample_bytree=0.85,
-            reg_lambda=5.0, n_jobs=-1, random_state=random_state, **params)
+        settings = _with_overrides({
+            "objective": "reg:squarederror", "n_estimators": 500, "learning_rate": 0.03,
+            "max_depth": 3, "subsample": 0.85, "colsample_bytree": 0.85,
+            "reg_lambda": 5.0, "n_jobs": -1, "random_state": random_state,
+        }, params)
+        learner = XGBRegressor(**settings)
     elif name == "lightgbm":
         try:
             from lightgbm import LGBMRegressor
         except ImportError as exc:
             raise RuntimeError("lightgbm is not installed; install .[modern]") from exc
-        learner = LGBMRegressor(
-            objective="regression_l1", n_estimators=500, learning_rate=0.03,
-            num_leaves=15, min_child_samples=20, reg_lambda=5.0,
-            verbosity=-1, random_state=random_state, **params)
+        settings = _with_overrides({
+            "objective": "regression_l1", "n_estimators": 500, "learning_rate": 0.03,
+            "num_leaves": 15, "min_child_samples": 20, "reg_lambda": 5.0,
+            "verbosity": -1, "random_state": random_state,
+        }, params)
+        learner = LGBMRegressor(**settings)
     elif name == "catboost":
         try:
             from catboost import CatBoostRegressor
         except ImportError as exc:
             raise RuntimeError("catboost is not installed; install .[modern]") from exc
-        learner = CatBoostRegressor(
-            loss_function="MAE", iterations=500, depth=5, learning_rate=0.03,
-            l2_leaf_reg=5.0, verbose=False, random_seed=random_state, **params)
+        settings = _with_overrides({
+            "loss_function": "MAE", "iterations": 500, "depth": 5, "learning_rate": 0.03,
+            "l2_leaf_reg": 5.0, "verbose": False, "random_seed": random_state,
+        }, params)
+        learner = CatBoostRegressor(**settings)
     elif name == "tabicl_v2":
         try:
             from tabicl import TabICLRegressor
@@ -137,7 +155,6 @@ def candidate_specs(names: tuple[str, ...] | None = None) -> list[CandidateSpec]
             {"depth": depth, "random_strength": strength}
             for depth, strength in product((4, 6), (0.5, 1.5))
         ],
-        # Foundation model: no F1-specific hyperparameter search by design.
         "tabicl_v2": [{}],
     }
     output = []
@@ -197,9 +214,9 @@ def tune_forward_events(frame: pd.DataFrame, specs: list[CandidateSpec] | None =
                 train = frame[frame.date < cutoff]
                 if train.event_id.nunique() < min_fit_events:
                     continue
-                estimator = build_estimator(spec)
-                estimator.fit(train[FEATURES], normalized_rank_target(train))
-                event_losses.append(_rank_mae(target_event, estimator.predict(target_event[FEATURES])))
+                model = build_estimator(spec)
+                model.fit(train[FEATURES], normalized_rank_target(train))
+                event_losses.append(_rank_mae(target_event, model.predict(target_event[FEATURES])))
             if not event_losses:
                 raise ValueError("candidate had no eligible tuning events")
             scores.append(CandidateScore(spec.name, spec.params, float(np.mean(event_losses)),
