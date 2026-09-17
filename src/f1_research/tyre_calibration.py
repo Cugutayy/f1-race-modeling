@@ -46,6 +46,17 @@ DEFAULT_PIT_AGE = {
 MIN_FIELD_CARS = 3
 MIN_STINT_LAPS = 4
 MIN_COMPOUND_STINTS = 5
+_STINT_COLUMNS = [
+    "session_key",
+    "driver_number",
+    "stint_number",
+    "compound",
+    "relative_slope",
+    "reference_residual_s",
+    "laps",
+    "max_tyre_age",
+    "max_lap_number",
+]
 
 
 @dataclass(frozen=True)
@@ -93,13 +104,17 @@ def _clean_rows(datasets: list[pd.DataFrame]) -> pd.DataFrame:
         if not selected.empty:
             frames.append(selected)
     if not frames:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=sorted(required))
     return pd.concat(frames, ignore_index=True)
 
 
 def _field_residuals(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
-        return frame
+        output = frame.copy()
+        output["field_count"] = pd.Series(dtype=float)
+        output["field_median_s"] = pd.Series(dtype=float)
+        output["field_residual_s"] = pd.Series(dtype=float)
+        return output
     output = frame.copy()
     grouped = output.groupby(["session_key", "lap_number"])["target_s"]
     output["field_count"] = grouped.transform("count")
@@ -125,6 +140,8 @@ def _theil_sen(age: np.ndarray, residual: np.ndarray) -> float | None:
 
 
 def _stint_estimates(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=_STINT_COLUMNS)
     rows: list[dict[str, Any]] = []
     keys = ["session_key", "driver_number", "stint_number", "compound"]
     for key, group in frame.groupby(keys, sort=True):
@@ -151,7 +168,7 @@ def _stint_estimates(frame: pd.DataFrame) -> pd.DataFrame:
             "max_tyre_age": float(group.tyre_age.max()),
             "max_lap_number": float(group.lap_number.max()),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=_STINT_COLUMNS)
 
 
 def _compound_pace(stints: pd.DataFrame) -> tuple[dict[str, float], dict[str, int]]:
@@ -197,9 +214,7 @@ def _compound_degradation(stints: pd.DataFrame) -> tuple[dict[str, float], dict[
             continue
         center = float(np.median(values))
         mad = float(np.median(np.abs(values - center)))
-        # The simulator uses this only as a future ageing penalty, so negative net
-        # slopes (fuel/track effect dominating wear) are clipped to zero.
-        median[compound] = float(np.clip(center, 0.0, 0.25))
+        median[compound] = float(np.clip(center, -0.05, 0.25))
         scale[compound] = float(np.clip(max(0.01, 1.4826 * mad), 0.01, 0.30))
     return median, scale, counts
 
