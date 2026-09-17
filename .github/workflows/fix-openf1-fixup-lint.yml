@@ -1,0 +1,36 @@
+name: Fix temporary OpenF1 harness lint
+
+on:
+  push:
+    branches:
+      - audit/openf1-evidence-contract-v2
+    paths:
+      - .github/workflows/fix-openf1-fixup-lint.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/openf1-evidence-contract-v2
+      - name: Fix generated import grouping
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/openf1-evidence-contract-fixup.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '    import requests\\n    import f1_research.provider_reconciliation as module\\n'
+          new = '    import requests\\n\\n    import f1_research.provider_reconciliation as module\\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one import block, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/openf1-evidence-contract-fixup.yml
+          git commit -m 'Fix temporary OpenF1 harness import grouping'
+          git push origin HEAD:audit/openf1-evidence-contract-v2
