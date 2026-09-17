@@ -166,11 +166,24 @@ def _row(provider, number, *, position=1, laps=57, grid=None, pits=None, points=
     )
 
 
+def _support_row(provider):
+    return _row(provider, 2, position=2, laps=56, grid=1, pits=0, points=18)
+
+
 def test_secondary_disagreement_is_warning_and_never_majority_repaired():
     report = reconcile_results({
-        "Jolpica": [_row("Jolpica", 1, grid=2, pits=1, points=25)],
-        "OpenF1": [_row("OpenF1", 1, pits=2)],
-        "FastF1": [_row("FastF1", 1, grid=2, pits=1, points=25)],
+        "Jolpica": [
+            _row("Jolpica", 1, grid=2, pits=1, points=25),
+            _support_row("Jolpica"),
+        ],
+        "OpenF1": [
+            _row("OpenF1", 1, pits=2),
+            _support_row("OpenF1"),
+        ],
+        "FastF1": [
+            _row("FastF1", 1, grid=2, pits=1, points=25),
+            _support_row("FastF1"),
+        ],
     })
     assert report["passed"] is True
     pit_warnings = [row for row in report["mismatches"] if row["field"] == "pit_stops"]
@@ -182,9 +195,18 @@ def test_secondary_disagreement_is_warning_and_never_majority_repaired():
 
 def test_missing_secondary_evidence_is_reported_as_insufficient_not_zero():
     report = reconcile_results({
-        "Jolpica": [_row("Jolpica", 1, grid=2, points=25)],
-        "OpenF1": [_row("OpenF1", 1)],
-        "FastF1": [_row("FastF1", 1, grid=2, points=25)],
+        "Jolpica": [
+            _row("Jolpica", 1, grid=2, points=25),
+            _support_row("Jolpica"),
+        ],
+        "OpenF1": [
+            _row("OpenF1", 1),
+            _support_row("OpenF1"),
+        ],
+        "FastF1": [
+            _row("FastF1", 1, grid=2, points=25),
+            _support_row("FastF1"),
+        ],
     })
     assert report["passed"] is True
     assert report["insufficient_secondary_count"] > 0
