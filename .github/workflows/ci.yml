@@ -2,6 +2,9 @@ name: Research checks
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: research-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
