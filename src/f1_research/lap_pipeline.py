@@ -198,7 +198,7 @@ def load_artifact(path: Path) -> dict[str, Any]:
     if task == "next_lap_duration" and hasattr(artifact.get("pipeline"), "predict"):
         return artifact
     if task == "next_lap_mixture":
-        required = {"regime_classifier", "pace_regressor", "classifier_columns", "conformal_radius_s"}
+        required = {"regime_classifier", "pace_regressor", "conformal_radius_s"}
         if required <= set(artifact):
             return artifact
     raise ValueError("Unsupported next-lap artifact")
