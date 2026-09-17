@@ -261,3 +261,61 @@ def test_collect_openf1_raw_keeps_missing_starting_grid_as_unknown(monkeypatch):
 
     assert raw["starting_grid"] is None
     assert raw["optional_collection_errors"]["starting_grid"]["http_status"] == 404
+
+
+
+def test_dns_vs_zero_lap_retired_is_semantic_gap_not_false_hard_mismatch():
+    support = ResultRow("Jolpica", 1, 1, 57, "finished")
+    providers = {
+        "Jolpica": [support, ResultRow("Jolpica", 6, 2, 0, "dnf")],
+        "FastF1": [
+            ResultRow("FastF1", 1, 1, 57, "finished"),
+            ResultRow("FastF1", 6, 2, 0, "dnf"),
+        ],
+        "OpenF1": [
+            ResultRow("OpenF1", 1, 1, 57, "finished"),
+            ResultRow("OpenF1", 6, None, 0, "dns"),
+        ],
+    }
+    report = reconcile_results(providers)
+    assert report["passed"] is True
+    assert report["verification_status"] == "PASS_WITH_GAPS"
+    assert report["hard_mismatch_count"] == 0
+    assert not [
+        mismatch
+        for mismatch in report["mismatches"]
+        if mismatch["driver_number"] == 6 and mismatch["field"] == "status_class"
+    ]
+    assert any(
+        gap["driver_number"] == 6 and gap["field"] == "start_status"
+        for gap in report["insufficient_hard_evidence"]
+    )
+    normalized = {
+        provider: {row["driver_number"]: row for row in rows}
+        for provider, rows in report["normalized"].items()
+    }
+    assert normalized["OpenF1"][6]["result_class"] == "non_finisher"
+    assert normalized["OpenF1"][6]["start_status"] == "dns"
+    assert normalized["Jolpica"][6]["result_class"] == "non_finisher"
+    assert normalized["Jolpica"][6]["start_status"] is None
+
+
+def test_genuine_result_class_disagreement_remains_hard_failure():
+    providers = {
+        "Jolpica": [
+            ResultRow("Jolpica", 1, 1, 57, "finished"),
+            ResultRow("Jolpica", 6, 2, 0, "dnf"),
+        ],
+        "OpenF1": [
+            ResultRow("OpenF1", 1, 1, 57, "finished"),
+            ResultRow("OpenF1", 6, 2, 0, "finished"),
+        ],
+    }
+    report = reconcile_results(providers)
+    assert report["passed"] is False
+    assert any(
+        row["driver_number"] == 6
+        and row["field"] == "result_class"
+        and row["severity"] == "hard"
+        for row in report["mismatches"]
+    )

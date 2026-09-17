@@ -27,7 +27,7 @@ from .data import JsonCache
 from .openf1_live import OpenF1Client
 from .provider_event_identity import build_event_identity, require_event_identity
 
-HARD_FIELDS = ("position", "laps", "status_class")
+HARD_FIELDS = ("position", "laps", "result_class", "start_status")
 SECONDARY_FIELDS = ("grid_position", "pit_stops", "points")
 POSITION_REQUIRED_STATUSES = {"finished", "classified_lapped"}
 POSITION_OPTIONAL_STATUSES = {"dnf", "dns", "dsq"}
@@ -42,8 +42,19 @@ FIELD_SEMANTICS = {
         "when present, otherwise maximum observed FastF1 LapNumber."
     ),
     "status_class": (
-        "Conservative normalized class: finished, classified_lapped, dnf, dns or dsq. "
-        "Raw provider status is retained for audit."
+        "Provider-specific normalized label: finished, classified_lapped, dnf, dns or dsq. "
+        "Retained for audit context; not compared as a cross-provider hard fact because providers "
+        "can encode start participation and final classification semantics differently."
+    ),
+    "result_class": (
+        "Cross-provider comparable race-result class derived conservatively from each provider label: "
+        "completed, classified_lapped, non_finisher or disqualified. DNS and DNF both map to "
+        "non_finisher here; their start-participation distinction is carried separately."
+    ),
+    "start_status": (
+        "Start-participation evidence: started, dns or UNKNOWN. A zero-lap generic Retired/DNF label "
+        "from Jolpica/FastF1 is UNKNOWN rather than guessed started or DNS; OpenF1 explicit DNS/DNF "
+        "flags can distinguish the states."
     ),
     "grid_position": (
         "Provider starting-grid position: Jolpica Results.grid, OpenF1 starting_grid.position, "
@@ -167,6 +178,36 @@ def _openf1_status(row: dict[str, Any]) -> str | None:
         return "classified_lapped"
     if _positive_int(row.get("position")) is not None:
         return "finished"
+    return None
+
+
+def _result_class(row: ResultRow) -> str | None:
+    """Map provider labels only to semantics that are comparable across sources."""
+    if row.status_class == "finished":
+        return "completed"
+    if row.status_class == "classified_lapped":
+        return "classified_lapped"
+    if row.status_class in {"dnf", "dns"}:
+        return "non_finisher"
+    if row.status_class == "dsq":
+        return "disqualified"
+    return None
+
+
+def _start_status(row: ResultRow) -> str | None:
+    """Return start evidence without turning a zero-lap generic retirement into a guess."""
+    if row.status_class == "dns":
+        return "dns"
+    if row.status_class in {"finished", "classified_lapped"}:
+        return "started"
+    if row.status_class == "dnf":
+        if row.provider == "OpenF1":
+            return "started"
+        if row.laps is not None and row.laps > 0:
+            return "started"
+        return None
+    if row.status_class == "dsq" and row.laps is not None and row.laps > 0:
+        return "started"
     return None
 
 
@@ -551,9 +592,33 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                         "provider values disagree",
                     ))
 
-                for field in ("laps", "status_class"):
-                    value_a, value_b = getattr(a, field), getattr(b, field)
-                    if value_a != value_b:
+                if a.laps != b.laps:
+                    mismatches.append(Mismatch(
+                        provider_a,
+                        provider_b,
+                        number,
+                        "laps",
+                        a.laps,
+                        b.laps,
+                        "hard",
+                        "provider values disagree",
+                    ))
+
+                for field, semantic in (("result_class", _result_class), ("start_status", _start_status)):
+                    value_a, value_b = semantic(a), semantic(b)
+                    if value_a is None or value_b is None:
+                        insufficient_hard.append({
+                            "provider_a": provider_a,
+                            "provider_b": provider_b,
+                            "driver_number": number,
+                            "field": field,
+                            "value_a": value_a,
+                            "value_b": value_b,
+                            "status_class_a": a.status_class,
+                            "status_class_b": b.status_class,
+                            "reason": "at least one provider lacks comparable semantic evidence",
+                        })
+                    elif value_a != value_b:
                         mismatches.append(Mismatch(
                             provider_a,
                             provider_b,
@@ -562,7 +627,7 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                             value_a,
                             value_b,
                             "hard",
-                            "provider values disagree",
+                            "provider semantic values disagree",
                         ))
 
                 for field in SECONDARY_FIELDS:
@@ -602,13 +667,18 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
 
     hard = [row for row in mismatches if row.severity == "hard"]
     warnings = [row for row in mismatches if row.severity == "warning"]
-    normalized_payload = {
-        provider: [asdict(row) for row in rows]
-        for provider, rows in normalized.items()
-    }
+    normalized_payload: dict[str, list[dict[str, Any]]] = {}
+    for provider, rows in normalized.items():
+        payload_rows: list[dict[str, Any]] = []
+        for row in rows:
+            payload = asdict(row)
+            payload["result_class"] = _result_class(row)
+            payload["start_status"] = _start_status(row)
+            payload_rows.append(payload)
+        normalized_payload[provider] = payload_rows
     verification_status = "FAIL" if hard else ("PASS_WITH_GAPS" if insufficient_hard else "PASS")
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "kind": "cross_provider_completed_race_reconciliation",
         "providers": providers,
         "row_counts": {provider: len(rows) for provider, rows in normalized.items()},
@@ -631,6 +701,7 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
             "identity_key": "race driver number",
             "hard_fields": list(HARD_FIELDS),
             "secondary_fields": list(SECONDARY_FIELDS),
+            "raw_status_class_is_audit_only": True,
             "nonfinisher_position_may_be_unknown": True,
             "missing_hard_evidence_is_not_mismatch": True,
             "missing_secondary_is_unknown": True,
