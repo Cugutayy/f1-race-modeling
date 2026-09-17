@@ -20,12 +20,14 @@ dependencies = [
 telemetry = ["fastf1>=3.6,<4", "matplotlib>=3.8,<4"]
 app = ["streamlit>=1.45,<2", "altair>=5,<7"]
 live = ["paho-mqtt>=2.1,<3"]
+api = ["fastapi>=0.137,<1", "uvicorn[standard]>=0.49,<1"]
 modern = ["xgboost>=3,<4", "lightgbm>=4,<5", "catboost>=1.2,<2"]
 foundation = ["tabicl>=2.2,<3"]
 dev = ["pytest>=8", "ruff>=0.9"]
 all = [
     "fastf1>=3.6,<4", "matplotlib>=3.8,<4", "streamlit>=1.45,<2", "altair>=5,<7",
-    "paho-mqtt>=2.1,<3", "xgboost>=3,<4", "lightgbm>=4,<5", "catboost>=1.2,<2",
+    "paho-mqtt>=2.1,<3", "fastapi>=0.137,<1", "uvicorn[standard]>=0.49,<1",
+    "xgboost>=3,<4", "lightgbm>=4,<5", "catboost>=1.2,<2",
     "tabicl>=2.2,<3", "pytest>=8", "ruff>=0.9",
 ]
 
@@ -34,6 +36,7 @@ f1-research = "f1_research.cli:main"
 f1-live = "f1_research.openf1_live:main"
 f1-laps = "f1_research.lap_pipeline:main"
 f1-laps-strict = "f1_research.strict_pipeline:main"
+f1-api = "f1_research.live_api:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
