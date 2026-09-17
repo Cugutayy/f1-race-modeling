@@ -62,6 +62,25 @@ def test_tyre_calibration_recovers_relative_compound_signal_and_pit_age():
     assert pit_age["SOFT"] == pytest.approx(6.0)
 
 
+def test_tyre_calibration_gracefully_falls_back_when_stint_fields_are_unavailable():
+    legacy = pd.DataFrame({
+        "session_key": [1, 1],
+        "driver_number": ["1", "2"],
+        "lap_number": [5, 5],
+        "target_s": [90.0, 91.0],
+        "target_valid": [True, True],
+        "lap_regime": ["green", "green"],
+    })
+    model, audit = calibrate_tyre_priors([legacy])
+    assert model.enabled is False
+    assert audit["clean_green_laps"] == 0
+    assert audit["eligible_stints"] == 0
+    pace, degradation, pit_age = maps_from_payload(as_payload(model))
+    assert pace["SOFT"] == pytest.approx(-0.35)
+    assert degradation["MEDIUM"] == pytest.approx(0.06)
+    assert pit_age["HARD"] == pytest.approx(40.0)
+
+
 def test_strategy_prior_loader_applies_tyre_maps(tmp_path):
     model, _ = calibrate_tyre_priors(_mixed_compound_sessions())
     payload = {
