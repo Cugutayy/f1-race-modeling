@@ -38,15 +38,10 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def collect_fastf1_partial(year: int, round_number: int, cache: Path) -> dict[str, Any]:
-    """Collect as much FastF1 evidence as is actually available.
-
-    FastF1 can return a populated result table while timing/lap data failed to load.
-    Accessing ``session.laps`` in that state raises ``DataNotLoadedError``. We preserve
-    the result evidence and record the lap failure instead of pretending laps were empty.
-    """
+    """Collect as much FastF1 evidence as is actually available."""
     try:
         import fastf1
-    except ImportError as exc:  # pragma: no cover - optional dependency in minimal installs
+    except ImportError as exc:  # pragma: no cover
         raise RuntimeError("FastF1 is not installed") from exc
 
     cache_dir = Path(cache) / "fastf1"
@@ -57,7 +52,7 @@ def collect_fastf1_partial(year: int, round_number: int, cache: Path) -> dict[st
     errors: dict[str, str] = {}
     try:
         session.load(telemetry=False, weather=False, messages=False)
-    except Exception as exc:  # provider/library failures must become audit evidence
+    except Exception as exc:  # provider/library failure becomes audit evidence
         errors["session_load"] = f"{type(exc).__name__}: {exc}"
 
     results: list[dict[str, Any]] = []
@@ -134,11 +129,14 @@ def _failure_report(
         "openf1_session_key": int(openf1_session_key),
         "retrieved_at": datetime.now(UTC).isoformat(),
         "passed": False,
+        "verification_status": "FAIL",
         "hard_mismatch_count": len(provider_errors),
         "warning_count": 0,
+        "insufficient_hard_count": 0,
         "insufficient_secondary_count": 0,
         "provider_errors": provider_errors,
         "mismatches": [],
+        "insufficient_hard_evidence": [],
         "insufficient_secondary": [],
         "raw_sha256": {
             name: _json_sha256(value) for name, value in raw_snapshots.items()
@@ -225,9 +223,9 @@ def audit_completed_race(
             "provider_errors": provider_errors,
             "raw_sha256": {name: _json_sha256(value) for name, value in raw.items()},
         })
-        # A collector/normalizer failure is hard even when the remaining providers agree.
         if provider_errors:
             report["passed"] = False
+            report["verification_status"] = "FAIL"
             report["hard_mismatch_count"] = int(report["hard_mismatch_count"]) + len(provider_errors)
     else:
         report = _failure_report(
@@ -241,12 +239,16 @@ def audit_completed_race(
     report["limitations"] = [
         "Public-provider agreement is not statistical independence or official FIA certification.",
         "FastF1 can expose result metadata even when timing/lap loading fails; partial evidence stays explicit.",
-        "Missing hard evidence fails the audit rather than being imputed.",
+        "A provider-specific absence of non-finisher position is retained as an evidence gap, not imputed.",
+        "Missing secondary evidence remains unknown rather than zero/false.",
         "Provider disagreements are never repaired by majority vote.",
     ]
 
     _write_json(output / "reconciliation.json", report)
     pd.DataFrame(report.get("mismatches", [])).to_csv(output / "mismatches.csv", index=False)
+    pd.DataFrame(report.get("insufficient_hard_evidence", [])).to_csv(
+        output / "insufficient_hard_evidence.csv", index=False
+    )
     pd.DataFrame(report.get("insufficient_secondary", [])).to_csv(
         output / "insufficient_secondary.csv", index=False
     )
@@ -272,8 +274,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     print(json.dumps({
         "passed": report["passed"],
+        "verification_status": report.get("verification_status"),
         "hard_mismatch_count": report.get("hard_mismatch_count", 0),
         "warning_count": report.get("warning_count", 0),
+        "insufficient_hard_count": report.get("insufficient_hard_count", 0),
         "provider_errors": report.get("provider_errors", {}),
         "output": str(args.output),
     }, indent=2))
