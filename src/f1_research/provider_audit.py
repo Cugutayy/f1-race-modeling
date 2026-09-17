@@ -125,7 +125,9 @@ def _failure_report(
     raw_snapshots: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
+        "artifact_schema_version": 1,
+        "reconciliation_schema_version": None,
         "kind": "cross_provider_completed_race_reconciliation",
         "year": int(year),
         "round": int(round_number),
@@ -232,7 +234,8 @@ def audit_completed_race(
 
     if len(normalized) == 3 and event_identity["verified"]:
         report = reconcile_results(normalized)
-        report["schema_version"] = 3
+        report["artifact_schema_version"] = 1
+        report["reconciliation_schema_version"] = report["schema_version"]
         report.update({
             "year": int(year),
             "round": int(round_number),
