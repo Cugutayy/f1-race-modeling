@@ -25,6 +25,7 @@ import pandas as pd
 
 from .data import JsonCache
 from .openf1_live import OpenF1Client
+from .provider_event_identity import build_event_identity, require_event_identity
 
 HARD_FIELDS = ("position", "laps", "status_class")
 SECONDARY_FIELDS = ("grid_position", "pit_stops", "points")
@@ -664,8 +665,15 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
         raise ValueError("OpenF1 reconciliation expected exactly one session")
     if str(sessions[0].get("session_name") or "").lower() != "race":
         raise ValueError("OpenF1 session_key is not a Race session")
+    meeting_key = _positive_int(sessions[0].get("meeting_key"))
+    if meeting_key is None:
+        raise ValueError("OpenF1 Race session has no valid meeting_key")
+    meetings = client.get("meetings", meeting_key=meeting_key)
+    if len(meetings) != 1:
+        raise ValueError("OpenF1 reconciliation expected exactly one meeting")
     return {
         "session": sessions[0],
+        "meeting": meetings[0],
         "session_result": client.get("session_result", session_key=int(session_key)),
         "drivers": client.get("drivers", session_key=int(session_key)),
         "laps": client.get("laps", session_key=int(session_key)),
@@ -694,6 +702,8 @@ def collect_fastf1_raw(year: int, round_number: int, cache: Path) -> dict[str, A
         "EventName": str(event.get("EventName")),
         "RoundNumber": int(event.get("RoundNumber")),
         "EventDate": str(event.get("EventDate")),
+        "Country": str(event.get("Country")),
+        "Location": str(event.get("Location")),
     }
     lap_columns = [
         column
@@ -732,6 +742,16 @@ def reconcile_completed_race(
     _write_json(raw_dir / "openf1.json", openf1)
     _write_json(raw_dir / "fastf1.json", fastf1)
 
+    event_identity = build_event_identity(
+        year=year,
+        round_number=round_number,
+        openf1_session_key=openf1_session_key,
+        jolpica_raw=jolpica,
+        openf1_raw=openf1,
+        fastf1_raw=fastf1,
+    )
+    require_event_identity(event_identity)
+
     jolpica_rows, jolpica_meta = normalize_jolpica_results(
         jolpica["results"],
         jolpica["pitstops"],
@@ -761,9 +781,11 @@ def reconcile_completed_race(
         "round": int(round_number),
         "openf1_session_key": int(openf1_session_key),
         "retrieved_at": datetime.now(UTC).isoformat(),
+        "event_identity": event_identity,
         "event_metadata": {
             "jolpica": jolpica_meta,
-            "openf1": session,
+            "openf1_session": session,
+            "openf1_meeting": openf1["meeting"],
             "fastf1": fastf1["event"],
         },
         "raw_sha256": {
