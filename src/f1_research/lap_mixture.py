@@ -13,10 +13,21 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score, log_loss
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 
-from .lap_intelligence import FEATURES, LapModelSpec, build_lap_estimator, live_feature_rows
+from .lap_intelligence import (
+    CATEGORICAL_FEATURES,
+    FEATURES,
+    NUMERIC_FEATURES,
+    LapModelSpec,
+    build_lap_estimator,
+    live_feature_rows,
+)
 
 REGIMES = ("green", "neutralized", "pit")
 
@@ -73,10 +84,17 @@ def attach_regime_labels(dataset: pd.DataFrame, lap_rows: list[dict[str, Any]],
     return output
 
 
-def build_regime_classifier() -> ExtraTreesClassifier:
-    # The same preprocessed feature table used for pace is intentionally avoided here:
-    # ExtraTrees can operate after get_dummies, preserving a simple serializable artifact.
-    return ExtraTreesClassifier(
+def build_regime_classifier() -> Pipeline:
+    numeric = Pipeline([("impute", SimpleImputer(strategy="median", add_indicator=True))])
+    categorical = Pipeline([
+        ("impute", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    ])
+    preprocess = ColumnTransformer([
+        ("numeric", numeric, NUMERIC_FEATURES),
+        ("categorical", categorical, CATEGORICAL_FEATURES),
+    ])
+    classifier = ExtraTreesClassifier(
         n_estimators=500,
         min_samples_leaf=3,
         max_features=0.8,
@@ -84,21 +102,7 @@ def build_regime_classifier() -> ExtraTreesClassifier:
         random_state=42,
         n_jobs=-1,
     )
-
-
-def _classifier_matrix(frame: pd.DataFrame, columns: list[str] | None = None) -> tuple[pd.DataFrame, list[str]]:
-    x = frame[FEATURES].copy()
-    for column in x.columns:
-        if column in ("compound", "driver_number"):
-            x[column] = x[column].astype(str).fillna("UNKNOWN")
-        else:
-            x[column] = pd.to_numeric(x[column], errors="coerce")
-            median = x[column].median()
-            x[column] = x[column].fillna(0.0 if pd.isna(median) else median)
-    x = pd.get_dummies(x, columns=["compound", "driver_number"], dummy_na=True, dtype=float)
-    if columns is None:
-        columns = x.columns.tolist()
-    return x.reindex(columns=columns, fill_value=0.0), columns
+    return Pipeline([("preprocess", preprocess), ("model", classifier)])
 
 
 def _pace_metrics(actual: np.ndarray, predicted: np.ndarray) -> tuple[float, float]:
@@ -148,6 +152,17 @@ def _select_regressor(train: pd.DataFrame, validation: pd.DataFrame,
     return next(spec for spec in specs if spec.name == winner["model"]), trials
 
 
+def _full_regime_probability(classifier: Pipeline, frame: pd.DataFrame) -> np.ndarray:
+    observed = classifier.predict_proba(frame[FEATURES])
+    classes = list(classifier.classes_)
+    full = np.full((len(frame), len(REGIMES)), 1e-12, dtype=float)
+    for source_index, name in enumerate(classes):
+        if name in REGIMES:
+            full[:, REGIMES.index(name)] = observed[:, source_index]
+    full /= full.sum(axis=1, keepdims=True)
+    return full
+
+
 def fit_mixture(datasets: list[pd.DataFrame], *,
                 specs: tuple[LapModelSpec, ...] | None = None,
                 alpha: float = 0.10) -> tuple[dict[str, Any], pd.DataFrame, dict[str, Any]]:
@@ -170,9 +185,7 @@ def fit_mixture(datasets: list[pd.DataFrame], *,
     selected, trials = _select_regressor(train, tuning, specs)
     pre_cal = pd.concat([train, tuning], ignore_index=True)
     regressor = _fit_regressor(pre_cal, selected)
-
-    x_regime, classifier_columns = _classifier_matrix(pre_cal)
-    classifier = build_regime_classifier().fit(x_regime, pre_cal.lap_regime.astype(str))
+    classifier = build_regime_classifier().fit(pre_cal[FEATURES], pre_cal.lap_regime.astype(str))
 
     cal_green = calibration[(calibration.target_valid) & calibration.lap_regime.astype(str).eq("green")]
     if cal_green.empty:
@@ -181,18 +194,19 @@ def fit_mixture(datasets: list[pd.DataFrame], *,
     radius = _conformal_radius(cal_green.target_s.to_numpy(), cal_prediction, alpha)
 
     test_green = test[(test.target_valid) & test.lap_regime.astype(str).eq("green")]
+    if test_green.empty:
+        raise ValueError("Sealed test race has no green laps")
     green_prediction = regressor.predict(test_green[FEATURES])
     green_mae, green_rmse = _pace_metrics(test_green.target_s.to_numpy(), green_prediction)
     lower, upper = green_prediction - radius, green_prediction + radius
     coverage = float(((test_green.target_s.to_numpy() >= lower)
                       & (test_green.target_s.to_numpy() <= upper)).mean())
 
-    x_test, _ = _classifier_matrix(test, classifier_columns)
-    regime_probability = classifier.predict_proba(x_test)
-    regime_prediction = classifier.classes_[np.argmax(regime_probability, axis=1)]
-    regime_accuracy = float(accuracy_score(test.lap_regime.astype(str), regime_prediction))
-    regime_loss = float(log_loss(test.lap_regime.astype(str), regime_probability,
-                                 labels=classifier.classes_))
+    regime_probability = _full_regime_probability(classifier, test)
+    regime_prediction = np.asarray(REGIMES, dtype=object)[np.argmax(regime_probability, axis=1)]
+    truth = test.lap_regime.astype(str).to_numpy()
+    regime_accuracy = float(accuracy_score(truth, regime_prediction))
+    regime_loss = float(log_loss(truth, regime_probability, labels=list(REGIMES)))
 
     summary = MixtureBenchmark(
         test_session=int(test.session_key.iloc[0]),
@@ -209,9 +223,8 @@ def fit_mixture(datasets: list[pd.DataFrame], *,
         "schema_version": 2,
         "task": "next_lap_mixture",
         "features": FEATURES,
-        "regimes": list(classifier.classes_),
+        "regimes": list(REGIMES),
         "regime_classifier": classifier,
-        "classifier_columns": classifier_columns,
         "pace_regressor": regressor,
         "selected_regressor": selected.name,
         "conformal_alpha": alpha,
@@ -243,15 +256,14 @@ def predict_live_mixture(artifact: dict[str, Any], snapshot: dict[str, Any]) -> 
     frame = live_feature_rows(snapshot)
     if frame.empty:
         return frame
-    x, _ = _classifier_matrix(frame, artifact["classifier_columns"])
     classifier = artifact["regime_classifier"]
-    probabilities = classifier.predict_proba(x)
+    probabilities = _full_regime_probability(classifier, frame)
     clean_pace = artifact["pace_regressor"].predict(frame[FEATURES])
     radius = float(artifact["conformal_radius_s"])
     output = frame.copy()
     output["predicted_green_lap_s"] = clean_pace
     output["green_lap_lower_s"] = clean_pace - radius
     output["green_lap_upper_s"] = clean_pace + radius
-    for index, name in enumerate(classifier.classes_):
+    for index, name in enumerate(REGIMES):
         output[f"p_{name}"] = probabilities[:, index]
     return output
