@@ -18,6 +18,8 @@ from f1_research.strategy import (
     DriverInput,
     PaceOverride,
     SimulationConfig,
+    _compress_gaps,
+    _traffic_penalty,
     compare_pit_windows,
     drivers_from_state,
     predict_from_state,
@@ -103,10 +105,72 @@ def test_current_compound_and_existing_tyre_age_are_not_double_counted():
         lap_noise_s=0.0,
         safety_car_hazard_per_lap=0.0,
         dnf_hazard_per_lap=0.0,
+        traffic_penalty_mean_s=0.0,
     )
     results, _ = simulate(drivers, 1, config=config)
     assert results[0].mean_remaining_time_s == pytest.approx(90.0)
     assert results[1].mean_remaining_time_s == pytest.approx(90.0)
+
+
+def test_safety_car_compression_only_changes_samples_scheduled_now():
+    total = np.asarray([
+        [0.0, 10.0, 20.0],
+        [2.0, 10.0, 18.0],
+        [4.0, 10.0, 16.0],
+    ])
+    original = total.copy()
+    mask = np.asarray([False, True, False])
+    _compress_gaps(total, mask, 0.25)
+    np.testing.assert_allclose(total[0], original[0])
+    np.testing.assert_allclose(total[2], original[2])
+    np.testing.assert_allclose(total[1], [2.0, 4.0, 6.0])
+
+
+def test_close_following_traffic_penalty_uses_current_simulated_gap():
+    total = np.asarray([
+        [0.0, 0.6, 3.0],
+        [0.0, 2.0, 4.0],
+    ])
+    config = SimulationConfig(
+        samples=1000,
+        traffic_window_s=1.2,
+        traffic_penalty_mean_s=0.2,
+        traffic_penalty_sd_s=0.0,
+    )
+    penalty, events = _traffic_penalty(total, np.random.default_rng(1), config)
+    assert events == 1
+    assert penalty[0, 1] == pytest.approx(0.1)
+    assert penalty[0, 0] == pytest.approx(0.0)
+    assert penalty[0, 2] == pytest.approx(0.0)
+    assert penalty[1].sum() == pytest.approx(0.0)
+
+
+def test_traffic_model_changes_close_following_outcome_but_can_be_disabled():
+    drivers = [
+        DriverInput(1, "A", 1, 0.0, 90.0, 0.0, 0.0, 0, "MEDIUM", dnf_hazard_per_lap=0.0),
+        DriverInput(2, "B", 2, 0.5, 90.0, 0.0, 0.0, 0, "MEDIUM", dnf_hazard_per_lap=0.0),
+    ]
+    common = dict(
+        samples=1000,
+        seed=4,
+        lap_noise_s=0.0,
+        safety_car_hazard_per_lap=0.0,
+        dnf_hazard_per_lap=0.0,
+        traffic_window_s=1.2,
+        traffic_penalty_sd_s=0.0,
+    )
+    disabled, disabled_audit = simulate(
+        drivers, 3, config=SimulationConfig(**common, traffic_penalty_mean_s=0.0)
+    )
+    enabled, enabled_audit = simulate(
+        drivers, 3, config=SimulationConfig(**common, traffic_penalty_mean_s=0.2)
+    )
+    disabled_b = next(row for row in disabled if row.driver_number == 2)
+    enabled_b = next(row for row in enabled if row.driver_number == 2)
+    assert enabled_b.mean_remaining_time_s > disabled_b.mean_remaining_time_s + 0.1
+    assert disabled_audit["traffic_close_following_events"] == 0
+    assert enabled_audit["traffic_close_following_events"] > 0
+    assert enabled_audit["safety_car_gap_application"] == "dynamic_at_sampled_sc_lap"
 
 
 def test_direct_plackett_luce_and_modern_core_models_produce_finite_scores():
