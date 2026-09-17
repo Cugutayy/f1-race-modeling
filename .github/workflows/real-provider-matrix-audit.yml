@@ -1,0 +1,46 @@
+name: Real provider matrix audit
+on:
+  push:
+    branches: [audit/real-race-matrix-v1]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        event:
+          - {year: 2023, round: 3, session_key: 7787}
+          - {year: 2024, round: 6, session_key: 9673}
+          - {year: 2024, round: 9, session_key: 9531}
+          - {year: 2024, round: 14, session_key: 9574}
+          - {year: 2024, round: 21, session_key: 9636}
+          - {year: 2025, round: 1, session_key: 9693}
+          - {year: 2025, round: 2, session_key: 9998}
+          - {year: 2026, round: 1, session_key: 11234}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - run: python -m pip install 'fastf1>=3.6,<4'
+      - name: Audit real completed race
+        env:
+          YEAR: ${{ matrix.event.year }}
+          ROUND: ${{ matrix.event.round }}
+          SESSION_KEY: ${{ matrix.event.session_key }}
+        run: |
+          python -m f1_research.provider_audit --year "$YEAR" --round "$ROUND" --openf1-session-key "$SESSION_KEY" --cache data/reconciliation-cache --output "reports/reconciliation/$YEAR-R$ROUND"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-audit-${{ matrix.event.year }}-R${{ matrix.event.round }}
+          path: reports/reconciliation
+          if-no-files-found: error
+          retention-days: 30
