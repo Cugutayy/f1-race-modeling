@@ -13,12 +13,17 @@ on:
       openf1_session_key:
         description: Explicit OpenF1 Race session_key for the same event
         required: true
+  push:
+    branches:
+      - audit/run-provider-identity-australia
+    paths:
+      - .github/workflows/provider-reconciliation.yml
 
 permissions:
   contents: read
 
 concurrency:
-  group: provider-reconciliation-${{ inputs.year }}-${{ inputs.round }}
+  group: provider-reconciliation-${{ inputs.year || '2025' }}-${{ inputs.round || '1' }}
   cancel-in-progress: false
 
 jobs:
@@ -39,15 +44,15 @@ jobs:
       - name: Audit completed race across Jolpica, OpenF1 and FastF1
         run: |
           python -m f1_research.provider_audit \
-            --year '${{ inputs.year }}' \
-            --round '${{ inputs.round }}' \
-            --openf1-session-key '${{ inputs.openf1_session_key }}' \
+            --year '${{ inputs.year || '2025' }}' \
+            --round '${{ inputs.round || '1' }}' \
+            --openf1-session-key '${{ inputs.openf1_session_key || '9693' }}' \
             --cache data/reconciliation-cache \
-            --output 'reports/reconciliation/${{ inputs.year }}-R${{ inputs.round }}'
+            --output 'reports/reconciliation/${{ inputs.year || '2025' }}-R${{ inputs.round || '1' }}'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: provider-reconciliation-${{ inputs.year }}-R${{ inputs.round }}
+          name: provider-reconciliation-${{ inputs.year || '2025' }}-R${{ inputs.round || '1' }}
           path: reports/reconciliation
           if-no-files-found: error
           retention-days: 30
