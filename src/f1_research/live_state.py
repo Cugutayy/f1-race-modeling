@@ -5,10 +5,14 @@ OpenF1 REST, MQTT or a historical replay. Every observation is merged with an
 explicit timestamp and stale/out-of-order messages cannot overwrite newer state.
 Live MQTT/WebSocket revisions additionally respect OpenF1's monotonically increasing
 ``_id`` for each ``_key`` document.
+
+OpenF1 interval fields are intentionally represented as either seconds or an explicit
+lap deficit. Values such as ``+1 LAP`` are never coerced to made-up seconds.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +20,8 @@ from typing import Any
 import numpy as np
 
 from .data_truth import parse_provider_timestamp
+
+_LAP_DEFICIT_RE = re.compile(r"^\+?\s*(\d+)\s+LAPS?$", re.IGNORECASE)
 
 
 def _utc(value: Any, fallback: datetime | None = None) -> datetime:
@@ -38,6 +44,39 @@ def _integer(value: Any) -> int | None:
     return int(number)
 
 
+def _timing_gap(value: Any) -> tuple[float | None, int | None, str | None]:
+    """Return mutually exclusive seconds/lap-deficit plus the raw provider value."""
+    raw = None if value is None else str(value).strip() or None
+    seconds = _finite(value)
+    if seconds is not None and seconds >= 0:
+        return float(seconds), None, raw
+    if isinstance(value, str):
+        match = _LAP_DEFICIT_RE.fullmatch(value.strip())
+        if match:
+            laps = int(match.group(1))
+            if laps >= 1:
+                return None, laps, raw
+    return None, None, raw
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, (float, np.floating)) and np.isfinite(value) and value in (0.0, 1.0):
+        return bool(int(value))
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1"}:
+            return True
+        if text in {"false", "0"}:
+            return False
+    return None
+
+
 @dataclass
 class DriverState:
     driver_number: int
@@ -47,7 +86,11 @@ class DriverState:
     team_colour: str | None = None
     position: int | None = None
     gap_to_leader_s: float | None = None
+    laps_behind: int | None = None
+    gap_to_leader_raw: str | None = None
     interval_s: float | None = None
+    interval_laps_behind: int | None = None
+    interval_raw: str | None = None
     lap_number: int | None = None
     last_lap_s: float | None = None
     sector_1_s: float | None = None
@@ -225,8 +268,14 @@ class RaceStateStore:
             self.state.driver(driver_number).position = _integer(payload.get("position"))
         elif topic == "intervals" and driver_number is not None:
             driver = self.state.driver(driver_number)
-            driver.gap_to_leader_s = _finite(payload.get("gap_to_leader"))
-            driver.interval_s = _finite(payload.get("interval"))
+            gap_s, laps_behind, gap_raw = _timing_gap(payload.get("gap_to_leader"))
+            interval_s, interval_laps, interval_raw = _timing_gap(payload.get("interval"))
+            driver.gap_to_leader_s = gap_s
+            driver.laps_behind = laps_behind
+            driver.gap_to_leader_raw = gap_raw
+            driver.interval_s = interval_s
+            driver.interval_laps_behind = interval_laps
+            driver.interval_raw = interval_raw
         elif topic == "laps" and driver_number is not None:
             driver = self.state.driver(driver_number)
             lap = _integer(payload.get("lap_number"))
@@ -237,7 +286,7 @@ class RaceStateStore:
             driver.sector_1_s = _finite(payload.get("duration_sector_1"))
             driver.sector_2_s = _finite(payload.get("duration_sector_2"))
             driver.sector_3_s = _finite(payload.get("duration_sector_3"))
-            if duration is not None and not payload.get("is_pit_out_lap", False):
+            if duration is not None and not _optional_bool(payload.get("is_pit_out_lap")):
                 driver.remember_lap(lap, duration)
         elif topic == "stints" and driver_number is not None:
             driver = self.state.driver(driver_number)
@@ -258,8 +307,7 @@ class RaceStateStore:
             driver = self.state.driver(driver_number)
             driver.speed_kmh = _finite(payload.get("speed"))
             driver.throttle_pct = _finite(payload.get("throttle"))
-            brake = _integer(payload.get("brake"))
-            driver.brake = None if brake is None else bool(brake)
+            driver.brake = _optional_bool(payload.get("brake"))
             driver.rpm = _integer(payload.get("rpm"))
             driver.gear = _integer(payload.get("n_gear"))
             driver.drs = _integer(payload.get("drs"))
@@ -272,7 +320,7 @@ class RaceStateStore:
                 track_temperature_c=_finite(payload.get("track_temperature")),
                 humidity_pct=_finite(payload.get("humidity")),
                 pressure_mbar=_finite(payload.get("pressure")),
-                rainfall=None if payload.get("rainfall") is None else bool(payload.get("rainfall")),
+                rainfall=_optional_bool(payload.get("rainfall")),
                 wind_speed_ms=_finite(payload.get("wind_speed")),
                 wind_direction_deg=_finite(payload.get("wind_direction")),
                 observed_at=at.isoformat(),

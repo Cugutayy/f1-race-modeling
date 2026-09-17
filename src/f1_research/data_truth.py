@@ -4,6 +4,11 @@ This module deliberately separates observed provider state from model assumption
 A prediction is allowed to proceed only when the minimum live observations required
 by the race simulator are present and fresh. Research/offline pipelines may choose a
 looser policy explicitly, but the production API uses the strict policy.
+
+OpenF1 may represent a lapped car's gap as ``+N LAP(S)`` instead of seconds. Such a
+lap deficit is trusted classification evidence, but it is not silently converted into
+a time gap. Lap-down cars can therefore remain in the live classification while the
+exact-time Monte Carlo operates on the lead-lap subset.
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ class LiveTruthAudit:
     observed_drivers: int
     required_drivers: int
     missing_fields: dict[str, list[str]]
+    simulation_eligible_drivers: int = 0
+    classification_only_drivers: int = 0
 
 
 def parse_provider_timestamp(value: Any) -> datetime | None:
@@ -105,21 +112,33 @@ def _exact_positive_int(value: Any) -> int | None:
     return int(number)
 
 
+def _finite_nonnegative(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number) or number < 0:
+        return None
+    return number
+
+
 def validate_simulation_observations(snapshot: dict[str, Any]) -> dict[str, list[str]]:
     """Return missing/invalid observed fields keyed by driver number.
 
-    The simulator needs real race gaps, usable pace observations and tyre state. It is
-    safer to refuse a trusted-live probability than to silently manufacture a gap or
-    assume MEDIUM/age zero for an unknown tyre.
+    Exact-time simulation requires seconds-based gaps, usable pace observations and tyre
+    state. A valid positive ``laps_behind`` is different evidence: it keeps the driver in
+    the trusted classification but marks that car classification-only rather than
+    manufacturing an exact time gap.
     """
     rows = snapshot.get("drivers")
     if not isinstance(rows, list):
         return {"state": ["drivers"]}
 
     missing: dict[str, list[str]] = {}
-    positioned: list[tuple[int, int | None, dict[str, Any], float | None]] = []
+    positioned: list[tuple[int, int | None, dict[str, Any], float | None, int | None]] = []
     driver_numbers: list[int] = []
     positions: list[int] = []
+    simulation_eligible = 0
 
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -127,7 +146,6 @@ def validate_simulation_observations(snapshot: dict[str, Any]) -> dict[str, list
             continue
         position = _exact_positive_int(row.get("position"))
         if position is None:
-            # A known driver without a current position means the live grid is incomplete.
             if _exact_positive_int(row.get("driver_number")) is not None:
                 key = str(int(float(row["driver_number"])))
                 missing.setdefault(key, []).append("position")
@@ -142,53 +160,65 @@ def validate_simulation_observations(snapshot: dict[str, Any]) -> dict[str, list
             driver_numbers.append(number)
         positions.append(position)
 
-        gap_value: float | None
+        gap_value = _finite_nonnegative(row.get("gap_to_leader_s"))
+        laps_behind = _exact_positive_int(row.get("laps_behind"))
+
         if position == 1:
-            raw_gap = row.get("gap_to_leader_s")
-            if raw_gap is None:
+            if laps_behind is not None:
+                fields.append("leader_laps_behind")
+            if row.get("gap_to_leader_s") is None:
                 gap_value = 0.0
-            else:
-                try:
-                    gap_value = float(raw_gap)
-                except (TypeError, ValueError):
-                    gap_value = None
-                if gap_value is None or not np.isfinite(gap_value) or gap_value < 0:
-                    fields.append("gap_to_leader_s")
-        else:
-            try:
-                gap_value = float(row.get("gap_to_leader_s"))
-            except (TypeError, ValueError):
-                gap_value = None
-            if gap_value is None or not np.isfinite(gap_value) or gap_value < 0:
+            elif gap_value is None:
                 fields.append("gap_to_leader_s")
-                gap_value = None
+        elif laps_behind is not None:
+            if gap_value is not None:
+                fields.append("conflicting_gap_representations")
+            # Classification is observed, but exact-time simulation deliberately excludes
+            # this row until a seconds gap becomes available again.
+            gap_value = None
+        elif gap_value is None:
+            # No lap-deficit evidence exists for this row, so a missing seconds gap is
+            # an incomplete exact-time observation rather than a license to fabricate it.
+            fields.append("gap_to_leader_s")
 
-        if not _finite_positive_laps(row):
-            fields.append("pace_observation")
+        requires_exact_time_inputs = laps_behind is None
+        exact_time_eligible = requires_exact_time_inputs and gap_value is not None
+        if exact_time_eligible:
+            simulation_eligible += 1
 
-        compound = str(row.get("compound") or "").upper().strip()
-        if compound not in SUPPORTED_COMPOUNDS:
-            fields.append("compound")
+        # A non-lapped row belongs to the exact-time model domain even when one required
+        # field (for example the seconds gap) is missing. Report all missing inputs so the
+        # trusted-live API fails closed with a complete diagnostic. Lap-down rows are the
+        # only rows allowed to omit pace/tyre inputs because they are classification-only.
+        if requires_exact_time_inputs:
+            if not _finite_positive_laps(row):
+                fields.append("pace_observation")
 
-        tyre_age = row.get("tyre_age")
-        try:
-            tyre_age_f = float(tyre_age)
-        except (TypeError, ValueError):
-            tyre_age_f = float("nan")
-        if (
-            not np.isfinite(tyre_age_f)
-            or tyre_age_f < 0
-            or tyre_age_f > MAX_TYRE_AGE_LAPS
-            or not tyre_age_f.is_integer()
-        ):
-            fields.append("tyre_age")
+            compound = str(row.get("compound") or "").upper().strip()
+            if compound not in SUPPORTED_COMPOUNDS:
+                fields.append("compound")
+
+            tyre_age = row.get("tyre_age")
+            try:
+                tyre_age_f = float(tyre_age)
+            except (TypeError, ValueError):
+                tyre_age_f = float("nan")
+            if (
+                not np.isfinite(tyre_age_f)
+                or tyre_age_f < 0
+                or tyre_age_f > MAX_TYRE_AGE_LAPS
+                or not tyre_age_f.is_integer()
+            ):
+                fields.append("tyre_age")
 
         if fields:
             missing[key] = sorted(set(fields))
-        positioned.append((position, number, row, gap_value))
+        positioned.append((position, number, row, gap_value, laps_behind))
 
     if len(positioned) < 2:
         missing.setdefault("state", []).append("at_least_two_positioned_drivers")
+    if simulation_eligible < 2:
+        missing.setdefault("state", []).append("at_least_two_exact_time_drivers")
 
     if len(driver_numbers) != len(set(driver_numbers)):
         missing.setdefault("state", []).append("duplicate_driver_numbers")
@@ -197,10 +227,12 @@ def validate_simulation_observations(snapshot: dict[str, Any]) -> dict[str, list
     if positions and sorted(positions) != list(range(1, len(positions) + 1)):
         missing.setdefault("state", []).append("non_consecutive_positions")
 
+    # Seconds gaps are monotonic only inside the exact-time/lead-lap representation.
+    # Lap-down rows are a different unit and are intentionally excluded here.
     ordered_gaps = [
         (position, gap)
-        for position, _number, _row, gap in sorted(positioned, key=lambda item: item[0])
-        if gap is not None
+        for position, _number, _row, gap, laps_behind in sorted(positioned, key=lambda item: item[0])
+        if laps_behind is None and gap is not None
     ]
     for (prev_position, prev_gap), (position, gap) in zip(ordered_gaps, ordered_gaps[1:]):
         if position > prev_position and gap + 1e-9 < prev_gap:
@@ -254,20 +286,26 @@ def assert_trusted_live_state(
         raise ValueError(f"Live state is incomplete for trusted simulation: {details}")
 
     rows = snapshot.get("drivers", [])
-    positioned = sum(
-        1
+    positioned = [
+        row
         for row in rows
         if isinstance(row, dict) and _exact_positive_int(row.get("position")) is not None
+    ]
+    classification_only = sum(
+        _exact_positive_int(row.get("laps_behind")) is not None for row in positioned
     )
+    eligible = len(positioned) - classification_only
     return LiveTruthAudit(
         status="trusted_live",
         state_age_s=state_age,
         provider_event_age_s=provider_age,
         max_age_s=float(max_age_s),
         future_tolerance_s=float(future_tolerance_s),
-        observed_drivers=positioned,
-        required_drivers=positioned,
+        observed_drivers=len(positioned),
+        required_drivers=eligible,
         missing_fields={},
+        simulation_eligible_drivers=eligible,
+        classification_only_drivers=classification_only,
     )
 
 
