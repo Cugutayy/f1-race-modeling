@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from f1_research import provider_audit
-from f1_research.provider_reconciliation import ResultRow
 
 
 def test_failure_report_has_explicit_verification_status_and_hard_evidence_shape():
