@@ -14,16 +14,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
-import pandas as pd
+
+from .data_truth import parse_provider_timestamp
 
 
 def _utc(value: Any, fallback: datetime | None = None) -> datetime:
-    if value is None:
-        return fallback or datetime.now(UTC)
-    parsed = pd.to_datetime(value, utc=True, errors="coerce")
-    if pd.isna(parsed):
-        return fallback or datetime.now(UTC)
-    return parsed.to_pydatetime()
+    parsed = parse_provider_timestamp(value)
+    return parsed if parsed is not None else fallback or datetime.now(UTC)
 
 
 def _finite(value: Any) -> float | None:
@@ -112,10 +109,12 @@ class RaceState:
     drivers: dict[int, DriverState] = field(default_factory=dict)
     weather: WeatherState = field(default_factory=WeatherState)
     updated_at: str | None = None
+    latest_provider_event_at: str | None = None
     source: str = "OpenF1"
     received_messages: int = 0
     rejected_stale_messages: int = 0
     rejected_provider_order_messages: int = 0
+    rejected_invalid_timestamp_messages: int = 0
 
     def driver(self, number: int) -> DriverState:
         if number not in self.drivers:
@@ -175,11 +174,27 @@ class RaceStateStore:
             self._global_topic_time[topic] = at
         return True
 
+    def _record_provider_event_time(self, at: datetime, explicit: bool) -> None:
+        if not explicit:
+            return
+        previous = parse_provider_timestamp(self.state.latest_provider_event_at)
+        if previous is None or at > previous:
+            self.state.latest_provider_event_at = at.astimezone(UTC).isoformat()
+
     def ingest(self, topic: str, payload: dict[str, Any], received_at: datetime | None = None) -> bool:
-        """Ingest one provider row; stale timestamps or stale provider revisions return False."""
+        """Ingest one provider row; malformed/stale event time or revision returns False."""
         topic = topic.rsplit("/", 1)[-1]
-        received_at = received_at or datetime.now(UTC)
-        at = _utc(payload.get("date") or payload.get("date_start"), received_at)
+        received_at = (received_at or datetime.now(UTC)).astimezone(UTC)
+        raw_time = payload.get("date") or payload.get("date_start")
+        explicit_time = raw_time is not None and raw_time != ""
+        if explicit_time:
+            at = parse_provider_timestamp(raw_time)
+            if at is None:
+                self.state.rejected_invalid_timestamp_messages += 1
+                return False
+        else:
+            at = received_at
+
         driver_number = _integer(payload.get("driver_number"))
         provider_version = self._provider_version(topic, payload)
         if not self._provider_is_fresh(provider_version):
@@ -190,9 +205,10 @@ class RaceStateStore:
         elif not self._accept(topic, at):
             return False
         self._record_provider_version(provider_version)
+        self._record_provider_event_time(at, explicit_time)
 
         self.state.received_messages += 1
-        self.state.updated_at = received_at.astimezone(UTC).isoformat()
+        self.state.updated_at = received_at.isoformat()
         self.state.session_key = _integer(payload.get("session_key")) or self.state.session_key
         self.state.meeting_key = _integer(payload.get("meeting_key")) or self.state.meeting_key
 
@@ -277,15 +293,22 @@ class RaceStateStore:
         return True
 
     def ingest_many(self, topic: str, rows: list[dict[str, Any]]) -> int:
+        def order(item: dict[str, Any]) -> tuple[int, datetime]:
+            raw = item.get("date") or item.get("date_start")
+            parsed = parse_provider_timestamp(raw)
+            if parsed is None:
+                return 1, datetime.max.replace(tzinfo=UTC)
+            return 0, parsed
+
         accepted = 0
-        for row in sorted(rows, key=lambda item: _utc(item.get("date") or item.get("date_start"))):
+        for row in sorted(rows, key=order):
             accepted += int(self.ingest(topic, row))
         return accepted
 
     def snapshot(self, now: datetime | None = None) -> dict[str, Any]:
-        now = now or datetime.now(UTC)
+        now = (now or datetime.now(UTC)).astimezone(UTC)
         payload = self.state.to_dict()
-        updated = _utc(self.state.updated_at, now)
-        payload["snapshot_at"] = now.astimezone(UTC).isoformat()
+        updated = parse_provider_timestamp(self.state.updated_at) or now
+        payload["snapshot_at"] = now.isoformat()
         payload["data_age_s"] = max(0.0, (now - updated).total_seconds())
         return payload
