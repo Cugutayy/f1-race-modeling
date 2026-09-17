@@ -13,12 +13,15 @@ on:
       openf1_session_key:
         description: Explicit OpenF1 Race session_key for the same event
         required: true
+  push:
+    branches:
+      - audit/replay-2025-australia-schema-v4
 
 permissions:
   contents: read
 
 concurrency:
-  group: provider-reconciliation-${{ inputs.year }}-${{ inputs.round }}
+  group: provider-reconciliation-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -38,16 +41,27 @@ jobs:
         run: python -m pip install 'fastf1>=3.6,<4'
       - name: Audit completed race across Jolpica, OpenF1 and FastF1
         run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            YEAR='2025'
+            ROUND='1'
+            SESSION_KEY='9693'
+            OUTPUT='reports/reconciliation/2025-R1-merged-schema-v4'
+          else
+            YEAR='${{ inputs.year }}'
+            ROUND='${{ inputs.round }}'
+            SESSION_KEY='${{ inputs.openf1_session_key }}'
+            OUTPUT="reports/reconciliation/${YEAR}-R${ROUND}"
+          fi
           python -m f1_research.provider_audit \
-            --year '${{ inputs.year }}' \
-            --round '${{ inputs.round }}' \
-            --openf1-session-key '${{ inputs.openf1_session_key }}' \
+            --year "$YEAR" \
+            --round "$ROUND" \
+            --openf1-session-key "$SESSION_KEY" \
             --cache data/reconciliation-cache \
-            --output 'reports/reconciliation/${{ inputs.year }}-R${{ inputs.round }}'
+            --output "$OUTPUT"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: provider-reconciliation-${{ inputs.year }}-R${{ inputs.round }}
+          name: provider-reconciliation-${{ github.run_id }}
           path: reports/reconciliation
           if-no-files-found: error
           retention-days: 30
