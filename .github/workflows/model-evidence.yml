@@ -3,11 +3,12 @@ name: Sealed model evidence
 on:
   workflow_dispatch:
   push:
-    branches: [feat/production-readiness-v1]
+    branches: [main, feat/production-readiness-v1]
     paths:
       - '.github/workflows/model-evidence.yml'
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: sealed-model-evidence-${{ github.ref }}
   cancel-in-progress: true
@@ -39,6 +40,28 @@ jobs:
             --output reports/model-release/release \
             --test-events 12 --tuning-events 8 --calibration-events 6 --min-fit-events 30 \
             --modern-models hist_gradient_boosting,extra_trees,xgboost,lightgbm,catboost
+      - name: Download real data-truth evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 35284249763 --repo "${{ github.repository }}" \
+            --name data-truth-matrix-35284249763 --dir reports/final/data-truth
+      - name: Download real replay evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 35284327579 --repo "${{ github.repository }}" \
+            --name real-replay-2025-australia-35284327579 --dir reports/final/replay
+      - name: Run final production gate
+        run: |
+          f1-production-check \
+            --data-truth reports/final/data-truth/data_truth_matrix.json \
+            --benchmark reports/model-release/release/benchmark/report.json \
+            --manifest reports/model-release/release/model_manifest.json \
+            --model reports/model-release/release/model.joblib \
+            --calibration reports/model-release/release/calibration.json \
+            --replay-capture reports/final/replay/source/events.jsonl \
+            --output reports/final/production-readiness.json
       - uses: actions/upload-artifact@v4
         with:
           name: sealed-model-release-${{ github.run_id }}
