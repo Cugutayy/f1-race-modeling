@@ -27,7 +27,6 @@ from .data import JsonCache
 from .openf1_live import OpenF1Client
 
 CANONICAL_FIELDS = ("position", "laps", "status_class")
-HARD_FIELDS = set(CANONICAL_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -81,7 +80,7 @@ def _status_from_text(status: Any, position_text: Any = None) -> str | None:
         return "dns"
     if raw == "FINISHED":
         return "finished"
-    if raw.startswith("+") and "LAP" in raw:
+    if "LAPPED" in raw or (raw.startswith("+") and "LAP" in raw):
         return "classified_lapped"
     if raw:
         return "dnf"
@@ -95,19 +94,16 @@ def _openf1_status(row: dict[str, Any]) -> str | None:
         return "dns"
     if bool(row.get("dnf")):
         return "dnf"
-    laps = _positive_int(row.get("number_of_laps"), allow_zero=True)
-    position = _positive_int(row.get("position"))
-    if laps is not None and position is not None:
-        return "classified"
+    gap = (_clean_text(row.get("gap_to_leader")) or "").upper()
+    if "LAP" in gap:
+        return "classified_lapped"
+    if _positive_int(row.get("position")) is not None:
+        return "finished"
     return None
 
 
 def normalize_jolpica_results(payload: dict[str, Any]) -> tuple[list[ResultRow], dict[str, Any]]:
-    """Normalize one Jolpica race-results response.
-
-    The function expects exactly one race. Pagination should be completed before this
-    function is called; ambiguous/multi-race payloads are rejected rather than merged.
-    """
+    """Normalize one Jolpica race-results response without guessing missing fields."""
     try:
         races = payload["MRData"]["RaceTable"]["Races"]
     except (KeyError, TypeError) as exc:
@@ -217,10 +213,12 @@ def normalize_fastf1_results(
         position = _positive_int(raw.get("Position"))
         classified = raw.get("ClassifiedPosition")
         status = raw.get("Status")
-        raw_laps = raw.get("Laps")
-        result_laps = _positive_int(raw_laps, allow_zero=True)
+        status_class = _status_from_text(status, classified)
+        result_laps = _positive_int(raw.get("Laps"), allow_zero=True)
         if result_laps is None:
             result_laps = lap_counts.get(number)
+        if result_laps is None and status_class == "dns":
+            result_laps = 0
         code = _clean_text(raw.get("Abbreviation")) or _clean_text(raw.get("Driver"))
         name = _clean_text(raw.get("FullName"))
         if name is None:
@@ -232,7 +230,7 @@ def normalize_fastf1_results(
             driver_number=number,
             position=position,
             laps=result_laps,
-            status_class=_status_from_text(status, classified),
+            status_class=status_class,
             status_raw=_clean_text(status),
             driver_code=code,
             driver_name=name,
@@ -247,14 +245,36 @@ def _validated_rows(rows: Iterable[ResultRow]) -> list[ResultRow]:
     numbers = [row.driver_number for row in rows]
     if len(numbers) != len(set(numbers)):
         raise ValueError("Duplicate driver numbers in provider results")
+    return sorted(rows, key=lambda row: (row.position is None, row.position or 10_000, row.driver_number))
+
+
+def _provider_integrity(provider: str, rows: list[ResultRow]) -> list[Mismatch]:
+    output: list[Mismatch] = []
     positions = [row.position for row in rows if row.position is not None]
     if len(positions) != len(rows):
-        raise ValueError("Provider results contain missing final positions")
+        missing = [row.driver_number for row in rows if row.position is None]
+        output.append(Mismatch(
+            provider, provider, None, "classification_integrity", missing, None, "hard",
+            "provider has result rows without final position",
+        ))
     if len(positions) != len(set(positions)):
-        raise ValueError("Provider results contain duplicate final positions")
-    if sorted(positions) != list(range(1, len(rows) + 1)):
-        raise ValueError("Provider results do not contain a complete consecutive classification")
-    return sorted(rows, key=lambda row: row.position or 10_000)
+        output.append(Mismatch(
+            provider, provider, None, "classification_integrity", positions, None, "hard",
+            "provider has duplicate final positions",
+        ))
+    if len(positions) == len(rows) and sorted(positions) != list(range(1, len(rows) + 1)):
+        output.append(Mismatch(
+            provider, provider, None, "classification_integrity", sorted(positions), None, "hard",
+            "provider classification is not consecutive 1..N",
+        ))
+    for row in rows:
+        for field in CANONICAL_FIELDS:
+            if getattr(row, field) is None:
+                output.append(Mismatch(
+                    provider, provider, row.driver_number, field, None, None, "hard",
+                    "provider is missing a required reconciliation field",
+                ))
+    return output
 
 
 def _row_index(rows: Iterable[ResultRow]) -> dict[int, ResultRow]:
@@ -268,6 +288,9 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
     normalized = {name: _validated_rows(rows) for name, rows in provider_rows.items()}
     providers = sorted(normalized)
     mismatches: list[Mismatch] = []
+
+    for provider in providers:
+        mismatches.extend(_provider_integrity(provider, normalized[provider]))
 
     for i, provider_a in enumerate(providers):
         for provider_b in providers[i + 1:]:
@@ -288,17 +311,9 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                 a, b = left[number], right[number]
                 for field in CANONICAL_FIELDS:
                     value_a, value_b = getattr(a, field), getattr(b, field)
-                    if value_a is None or value_b is None:
-                        if value_a != value_b:
-                            mismatches.append(Mismatch(
-                                provider_a, provider_b, number, field, value_a, value_b, "hard",
-                                "required comparison field missing in one provider",
-                            ))
-                        continue
                     if value_a != value_b:
                         mismatches.append(Mismatch(
-                            provider_a, provider_b, number, field, value_a, value_b,
-                            "hard" if field in HARD_FIELDS else "warning",
+                            provider_a, provider_b, number, field, value_a, value_b, "hard",
                             "provider values disagree",
                         ))
                 if a.driver_code and b.driver_code and a.driver_code.upper() != b.driver_code.upper():
@@ -346,7 +361,6 @@ def collect_jolpica_raw(year: int, round_number: int, cache: Path) -> dict[str, 
     client = JsonCache(Path(cache) / "jolpica")
     url = f"https://api.jolpi.ca/ergast/f1/{year}/{round_number}/results/?limit=100"
     payload = client.get(url)
-    # The endpoint is one race and <= current F1 grid size, so no result-row pagination is expected.
     try:
         total = int(payload["MRData"]["total"])
         races = payload["MRData"]["RaceTable"]["Races"]
@@ -395,14 +409,13 @@ def collect_fastf1_raw(year: int, round_number: int, cache: Path) -> dict[str, A
         "RoundNumber": int(event.get("RoundNumber")),
         "EventDate": str(event.get("EventDate")),
     }
+    lap_columns = [column for column in ("DriverNumber", "LapNumber") if column in session.laps]
+    if set(lap_columns) != {"DriverNumber", "LapNumber"}:
+        raise ValueError("FastF1 laps lack DriverNumber/LapNumber")
     return {
         "event": event_meta,
         "results": json.loads(session.results.to_json(orient="records", date_format="iso")),
-        "laps": json.loads(
-            session.laps[[column for column in ("DriverNumber", "LapNumber") if column in session.laps]].to_json(
-                orient="records", date_format="iso"
-            )
-        ),
+        "laps": json.loads(session.laps[lap_columns].to_json(orient="records", date_format="iso")),
         "fastf1_version": fastf1.__version__,
     }
 
