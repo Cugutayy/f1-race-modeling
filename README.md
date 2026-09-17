@@ -309,3 +309,46 @@ Normal CI is offline. `Research checks` validates the Python stack and `Web chec
 ## Status
 
 This branch is research software under active development. The strongest claims should come from generated benchmark reports, not from architecture sophistication. Live OpenF1 connectivity also depends on provider entitlement and cannot be proven by an offline unit test.
+
+
+## Production evidence path
+
+The repository now separates software demos from evidence-bearing releases.
+
+```bash
+# 1. Build a real historical dataset.
+f1-research collect --years 2018 2019 2020 2021 2022 2023 2024 2025 2026 \
+  --output reports/history.csv
+
+# 2. Build a sealed chronological benchmark and content-addressed model release.
+f1-release --input reports/history.csv --output reports/release \
+  --test-events 12 --tuning-events 8 --calibration-events 6 --min-fit-events 30 \
+  --modern-models hist_gradient_boosting,extra_trees,xgboost,lightgbm,catboost
+
+# 3. Run the real-provider data-truth workflow from GitHub Actions.
+#    It audits 12 completed races across OpenF1, Jolpica and FastF1.
+
+# 4. Fail closed before deployment.
+f1-production-check \
+  --data-truth reports/data-truth/data_truth_matrix.json \
+  --benchmark reports/release/benchmark/report.json \
+  --manifest reports/release/model_manifest.json \
+  --model reports/release/model.joblib
+```
+
+The production gate requires at least 12 persisted real-provider audit artifacts, no
+`FAIL` data-truth event, a disjoint fit/tuning/calibration/sealed-test benchmark,
+and a model whose SHA-256 and benchmark run id match its manifest.
+
+### Live architecture
+
+`f1-live` performs REST bootstrap and authenticated OpenF1 MQTT capture. Raw events
+are appended to `events.jsonl`; `RaceStateStore` publishes an atomic canonical
+state. `f1-api` exposes health, live race simulation, strategy counterfactuals,
+telemetry, captured location trails, model evidence and a versioned WebSocket state
+stream. The Next.js UI renders leaderboard probabilities, pace, telemetry, strategy
+and an approximate circuit trace reconstructed from captured public x/y samples.
+
+Historical OpenF1 gaps remain explicit unknown evidence. Provider disagreements are
+never repaired by majority vote, and missing values are never silently converted to
+zero/false.
