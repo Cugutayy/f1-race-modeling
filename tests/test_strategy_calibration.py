@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from f1_research.strategy import SimulationConfig
 from f1_research.strategy_calibration import (
     calibrate_strategy_priors,
     load_simulation_config,
@@ -29,7 +30,8 @@ def _dataset(session_key: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _write_raw(root: Path, session_key: int, max_lap: int, sc_laps: tuple[int, ...]):
+def _write_raw(root: Path, session_key: int, max_lap: int, sc_laps: tuple[int, ...],
+               results: list[dict] | None = None):
     session = root / str(session_key)
     session.mkdir(parents=True)
     laps = [{"session_key": session_key, "driver_number": 1, "lap_number": lap}
@@ -45,12 +47,24 @@ def _write_raw(root: Path, session_key: int, max_lap: int, sc_laps: tuple[int, .
         })
     (session / "laps.json").write_text(json.dumps(laps), encoding="utf-8")
     (session / "race_control.json").write_text(json.dumps(control), encoding="utf-8")
+    (session / "session_result.json").write_text(json.dumps(results or []), encoding="utf-8")
 
 
-def test_calibrates_public_pit_and_sc_priors_but_not_dnf(tmp_path):
+def _results(session_key: int, finishers: int = 18, dnfs: int = 2, laps: int = 55):
+    rows = []
+    for driver in range(1, finishers + 1):
+        rows.append({"session_key": session_key, "driver_number": driver,
+                     "number_of_laps": laps, "dnf": False, "dns": False, "dsq": False})
+    for offset in range(dnfs):
+        rows.append({"session_key": session_key, "driver_number": 100 + offset,
+                     "number_of_laps": 20 + offset * 5, "dnf": True, "dns": False, "dsq": False})
+    return rows
+
+
+def test_calibrates_public_pit_sc_and_dnf_priors(tmp_path):
     raw = tmp_path / "raw"
-    _write_raw(raw, 501, 50, (10,))
-    _write_raw(raw, 502, 60, (20, 40))
+    _write_raw(raw, 501, 50, (10,), _results(501))
+    _write_raw(raw, 502, 60, (20, 40), _results(502))
     datasets = [_dataset(501), _dataset(502), _dataset(503)]
 
     priors, audit = calibrate_strategy_priors(datasets, raw, [501, 502])
@@ -60,13 +74,28 @@ def test_calibrates_public_pit_and_sc_priors_but_not_dnf(tmp_path):
     assert priors.safety_car_starts == 3
     assert priors.race_laps_observed == 110
     assert priors.safety_car_hazard_per_lap == pytest.approx(3 / 110)
-    assert priors.dnf_source == "default_not_calibrated"
-    assert "not calibrated" in audit["dnf_hazard"]
+    assert priors.dnf_events == 4
+    assert priors.car_laps_observed > 2000
+    assert priors.dnf_source == "session_result_dnf_per_car_lap_exposure"
+    assert priors.dnf_hazard_per_lap == pytest.approx(priors.dnf_events / priors.car_laps_observed)
+    assert audit["dnf_source"] == priors.dnf_source
+
+
+def test_insufficient_result_exposure_keeps_explicit_dnf_fallback(tmp_path):
+    raw = tmp_path / "raw"
+    _write_raw(raw, 551, 20, (), [
+        {"session_key": 551, "driver_number": 1, "number_of_laps": 10,
+         "dnf": True, "dns": False, "dsq": False},
+    ])
+    priors, audit = calibrate_strategy_priors([_dataset(551)], raw, [551])
+    assert priors.dnf_source == "fallback_insufficient_session_result_exposure"
+    assert priors.dnf_hazard_per_lap == pytest.approx(SimulationConfig().dnf_hazard_per_lap)
+    assert audit["dnf_source"] == priors.dnf_source
 
 
 def test_strategy_prior_roundtrip_builds_simulation_config(tmp_path):
     raw = tmp_path / "raw"
-    _write_raw(raw, 601, 55, (12,))
+    _write_raw(raw, 601, 55, (12,), _results(601))
     datasets = [_dataset(601), _dataset(602), _dataset(603)]
     priors, audit = calibrate_strategy_priors(datasets, raw, [601])
     path = tmp_path / "strategy_priors.json"
@@ -77,4 +106,5 @@ def test_strategy_prior_roundtrip_builds_simulation_config(tmp_path):
     assert config.seed == 9
     assert config.pit_loss_mean_s == pytest.approx(priors.pit_loss_mean_s)
     assert config.safety_car_hazard_per_lap == pytest.approx(priors.safety_car_hazard_per_lap)
-    assert payload["priors"]["dnf_source"] == "default_not_calibrated"
+    assert config.dnf_hazard_per_lap == pytest.approx(priors.dnf_hazard_per_lap)
+    assert payload["priors"]["dnf_source"] == priors.dnf_source
