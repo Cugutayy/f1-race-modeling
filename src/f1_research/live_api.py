@@ -22,6 +22,7 @@ from .data_truth import assert_trusted_live_state, audit_payload
 from .live_intelligence import combined_live_report, combined_pit_windows, load_strict_artifact
 from .live_quality import classify as classify_live_quality
 from .reliability import reliability_overrides_from_state
+from .monitoring import snapshot as monitoring_snapshot
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
 
@@ -383,6 +384,16 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
         "disconnect_count": stream.get("disconnect_count"),
         "last_stream_error": stream.get("last_error"),
     }))
+
+
+@app.get("/v1/metrics")
+def metrics(_: None = Depends(_authorize)) -> JSONResponse:
+    state = _read_state()
+    return JSONResponse(_safe(monitoring_snapshot(
+        state,
+        state_age_s=_state_age_s(state),
+        provider_age_s=_age_s(state.get("latest_provider_event_at")),
+    )))
 
 
 @app.get("/v1/evidence")
