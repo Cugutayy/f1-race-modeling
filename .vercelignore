@@ -1,0 +1,16 @@
+.git
+.github
+.cache
+.venv
+__pycache__
+app
+docs
+reports
+src
+tests
+Dockerfile.worker
+compose.live.yaml
+f1_predictor.py
+pyproject.toml
+requirements*.txt
+*.pyc
