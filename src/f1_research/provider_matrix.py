@@ -35,6 +35,7 @@ class MatrixEvent:
     insufficient_hard_count: int
     insufficient_secondary_count: int
     provider_error_count: int
+    reconciliation_performed: bool
 
 
 def _sha256(path: Path) -> str:
@@ -68,14 +69,10 @@ def _load_event(path: Path) -> MatrixEvent:
     artifact_schema = _exact_int(
         payload.get("artifact_schema_version"), field="artifact_schema_version", minimum=1
     )
-    reconciliation_schema = _exact_int(
-        payload.get("reconciliation_schema_version"),
-        field="reconciliation_schema_version",
-        minimum=1,
-    )
-    if schema != EXPECTED_RECONCILIATION_SCHEMA or reconciliation_schema != schema:
+    reconciliation_raw = payload.get("reconciliation_schema_version")
+    if schema != EXPECTED_RECONCILIATION_SCHEMA:
         raise ValueError(
-            f"{path}: unsupported reconciliation schema {schema}/{reconciliation_schema}; "
+            f"{path}: unsupported reconciliation schema {schema}; "
             f"expected {EXPECTED_RECONCILIATION_SCHEMA}"
         )
     if artifact_schema != EXPECTED_ARTIFACT_SCHEMA:
@@ -92,6 +89,24 @@ def _load_event(path: Path) -> MatrixEvent:
         raise ValueError(f"{path}: passed must be explicit boolean")
     if passed != (status in {"PASS", "PASS_WITH_GAPS"}):
         raise ValueError(f"{path}: passed and verification_status disagree")
+
+    # Collection/normalization can fail before reconciliation exists. The audit envelope
+    # deliberately records reconciliation_schema_version=None in that case. A passing
+    # artifact, or a FAIL produced after reconciliation, must still carry schema v4.
+    if reconciliation_raw is None:
+        if status != "FAIL":
+            raise ValueError(f"{path}: passing artifact has no reconciliation schema")
+        reconciliation_performed = False
+    else:
+        reconciliation_schema = _exact_int(
+            reconciliation_raw, field="reconciliation_schema_version", minimum=1
+        )
+        if reconciliation_schema != schema:
+            raise ValueError(
+                f"{path}: unsupported reconciliation schema {schema}/{reconciliation_schema}; "
+                f"expected {EXPECTED_RECONCILIATION_SCHEMA}"
+            )
+        reconciliation_performed = True
 
     identity = payload.get("event_identity")
     if not isinstance(identity, dict) or not isinstance(identity.get("verified"), bool):
@@ -127,6 +142,7 @@ def _load_event(path: Path) -> MatrixEvent:
             payload.get("insufficient_secondary_count"), field="insufficient_secondary_count"
         ),
         provider_error_count=len(provider_errors),
+        reconciliation_performed=reconciliation_performed,
     )
 
 
