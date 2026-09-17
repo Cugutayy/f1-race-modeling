@@ -29,4 +29,44 @@ def test_v2_blocks_are_disjoint_and_probability_distributions_are_coherent():
         assert group.win_probability.sum() == pytest.approx(1)
         assert group.podium_probability.sum() == pytest.approx(3, abs=0.08)
         assert group.top10_probability.sum() == pytest.approx(6, abs=0.08)
+
+    assert audit["modern_selection_metric"] == "winner_log_loss"
+    assert audit["modern_tuning_temperature_is_final"] is False
+    assert audit["pl_selection_metric"] == "winner_log_loss"
+    assert audit["pl_tuning_temperature_is_final"] is False
+    modern_rows = [row for row in audit["modern_tuning"] if row["error"] is None]
+    pl_rows = [row for row in audit["pl_tuning"] if row["error"] is None]
+    assert modern_rows and pl_rows
+    assert all(np.isfinite(row["mean_winner_log_loss"]) for row in modern_rows)
+    assert all(np.isfinite(row["mean_position_mae"]) for row in modern_rows)
+    assert all(row["tuning_temperature"] > 0 for row in modern_rows)
+    assert all(np.isfinite(row["mean_winner_log_loss"]) for row in pl_rows)
+    assert all(row["tuning_temperature"] > 0 for row in pl_rows)
     assert audit["test_updates_model"] is False
+
+
+def test_mutating_sealed_test_outcomes_cannot_change_model_or_temperature_selection():
+    frame = synthetic_history(events=11, drivers=5)
+    kwargs = dict(
+        test_events=2,
+        tuning_events=2,
+        calibration_events=1,
+        min_fit_events=6,
+        modern_names=("hist_gradient_boosting",),
+        max_specs_per_model=1,
+    )
+    _, _, original = benchmark_v2(frame, **kwargs)
+    changed = frame.copy()
+    test_ids = set(original["split"]["test"])
+    for event_id in test_ids:
+        mask = changed.event_id.eq(event_id)
+        maximum = changed.loc[mask, "finish_position"].max()
+        changed.loc[mask, "finish_position"] = maximum + 1 - changed.loc[mask, "finish_position"]
+
+    _, _, mutated = benchmark_v2(changed, **kwargs)
+    assert original["split"] == mutated["split"]
+    assert original["selected_modern"] == mutated["selected_modern"]
+    assert original["modern_tuning"] == mutated["modern_tuning"]
+    assert original["selected_pl_l2"] == mutated["selected_pl_l2"]
+    assert original["pl_tuning"] == mutated["pl_tuning"]
+    assert original["temperatures"] == mutated["temperatures"]
