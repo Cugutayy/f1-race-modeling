@@ -151,17 +151,17 @@ def _stop_capture_supervisor() -> None:
     _capture_thread = None
 
 
-app.add_event_handler("startup", _start_capture_supervisor)
-app.add_event_handler("shutdown", _stop_capture_supervisor)
-
-
 def main() -> None:
-    """Run the Railway wrapper without relying on shell expansion of ``$PORT``."""
+    """Run the Railway wrapper and supervise capture for the server lifetime."""
     import uvicorn
 
     host = os.environ.get("F1_API_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", os.environ.get("F1_API_PORT", "8000")))
-    uvicorn.run("f1_research.railway_app:app", host=host, port=port, log_level="info")
+    _start_capture_supervisor()
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    finally:
+        _stop_capture_supervisor()
 
 
 if __name__ == "__main__":
