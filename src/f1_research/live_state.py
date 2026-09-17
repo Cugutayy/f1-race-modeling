@@ -3,6 +3,8 @@
 The rest of the project never needs to know whether observations arrived through
 OpenF1 REST, MQTT or a historical replay. Every observation is merged with an
 explicit timestamp and stale/out-of-order messages cannot overwrite newer state.
+Live MQTT/WebSocket revisions additionally respect OpenF1's monotonically increasing
+``_id`` for each ``_key`` document.
 """
 
 from __future__ import annotations
@@ -113,6 +115,7 @@ class RaceState:
     source: str = "OpenF1"
     received_messages: int = 0
     rejected_stale_messages: int = 0
+    rejected_provider_order_messages: int = 0
 
     def driver(self, number: int) -> DriverState:
         if number not in self.drivers:
@@ -136,6 +139,29 @@ class RaceStateStore:
         self.state = RaceState(session_key=session_key)
         self._global_topic_time: dict[str, datetime] = {}
         self._driver_topic_time: dict[tuple[int, str], datetime] = {}
+        self._provider_versions: dict[tuple[str, str], int] = {}
+
+    def _provider_version(self, topic: str, payload: dict[str, Any]) -> tuple[tuple[str, str], int] | None:
+        provider_id = _integer(payload.get("_id"))
+        provider_key = payload.get("_key")
+        if provider_id is None or provider_key is None or str(provider_key) == "":
+            return None
+        return (topic, str(provider_key)), provider_id
+
+    def _provider_is_fresh(self, version: tuple[tuple[str, str], int] | None) -> bool:
+        if version is None:
+            return True
+        key, provider_id = version
+        previous = self._provider_versions.get(key)
+        if previous is not None and provider_id <= previous:
+            self.state.rejected_provider_order_messages += 1
+            return False
+        return True
+
+    def _record_provider_version(self, version: tuple[tuple[str, str], int] | None) -> None:
+        if version is not None:
+            key, provider_id = version
+            self._provider_versions[key] = provider_id
 
     def _accept(self, topic: str, at: datetime, driver: int | None = None) -> bool:
         key = (driver, topic) if driver is not None else None
@@ -150,16 +176,20 @@ class RaceStateStore:
         return True
 
     def ingest(self, topic: str, payload: dict[str, Any], received_at: datetime | None = None) -> bool:
-        """Ingest one provider row. Returns False only when the row is stale."""
+        """Ingest one provider row; stale timestamps or stale provider revisions return False."""
         topic = topic.rsplit("/", 1)[-1]
         received_at = received_at or datetime.now(UTC)
         at = _utc(payload.get("date") or payload.get("date_start"), received_at)
         driver_number = _integer(payload.get("driver_number"))
+        provider_version = self._provider_version(topic, payload)
+        if not self._provider_is_fresh(provider_version):
+            return False
         if topic in self.DRIVER_TOPICS and driver_number is not None:
             if not self._accept(topic, at, driver_number):
                 return False
         elif not self._accept(topic, at):
             return False
+        self._record_provider_version(provider_version)
 
         self.state.received_messages += 1
         self.state.updated_at = received_at.astimezone(UTC).isoformat()
