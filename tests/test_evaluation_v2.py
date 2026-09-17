@@ -21,7 +21,8 @@ def test_v2_blocks_are_disjoint_and_probability_distributions_are_coherent():
     assert all(a.isdisjoint(b) for i, a in enumerate(blocks) for b in blocks[i + 1:])
     assert metrics.event_id.nunique() == 2
     assert set(metrics.event_id) == set(split["test"])
-    assert metrics.model.nunique() == 5
+    assert metrics.model.nunique() == 6
+    assert "rank_ensemble" in set(metrics.model)
     assert np.isfinite(metrics[["position_mae", "winner_log_loss", "winner_brier"]]).all().all()
 
     grouped = predictions.groupby(["event_id", "model"])
@@ -34,9 +35,14 @@ def test_v2_blocks_are_disjoint_and_probability_distributions_are_coherent():
     assert audit["modern_tuning_temperature_is_final"] is False
     assert audit["pl_selection_metric"] == "winner_log_loss"
     assert audit["pl_tuning_temperature_is_final"] is False
+    assert audit["ensemble_enabled"] is True
+    assert audit["ensemble_selection_metric"] == "winner_log_loss"
+    assert audit["ensemble_tuning_temperature_is_final"] is False
+    assert sum(audit["ensemble_weights"].values()) == pytest.approx(1.0)
+    assert sum(value > 0 for value in audit["ensemble_weights"].values()) >= 2
     modern_rows = [row for row in audit["modern_tuning"] if row["error"] is None]
     pl_rows = [row for row in audit["pl_tuning"] if row["error"] is None]
-    assert modern_rows and pl_rows
+    assert modern_rows and pl_rows and audit["ensemble_tuning"]
     assert all(np.isfinite(row["mean_winner_log_loss"]) for row in modern_rows)
     assert all(np.isfinite(row["mean_position_mae"]) for row in modern_rows)
     assert all(row["tuning_temperature"] > 0 for row in modern_rows)
@@ -69,4 +75,25 @@ def test_mutating_sealed_test_outcomes_cannot_change_model_or_temperature_select
     assert original["modern_tuning"] == mutated["modern_tuning"]
     assert original["selected_pl_l2"] == mutated["selected_pl_l2"]
     assert original["pl_tuning"] == mutated["pl_tuning"]
+    assert original["ensemble_weights"] == mutated["ensemble_weights"]
+    assert original["ensemble_tuning"] == mutated["ensemble_tuning"]
     assert original["temperatures"] == mutated["temperatures"]
+
+
+def test_ensemble_can_be_disabled_without_changing_individual_model_protocol():
+    frame = synthetic_history(events=11, drivers=5)
+    metrics, _, audit = benchmark_v2(
+        frame,
+        test_events=2,
+        tuning_events=2,
+        calibration_events=1,
+        min_fit_events=6,
+        modern_names=("hist_gradient_boosting",),
+        max_specs_per_model=1,
+        include_ensemble=False,
+    )
+    assert "rank_ensemble" not in set(metrics.model)
+    assert metrics.model.nunique() == 5
+    assert audit["ensemble_enabled"] is False
+    assert audit["ensemble_weights"] is None
+    assert audit["ensemble_tuning"] == []
