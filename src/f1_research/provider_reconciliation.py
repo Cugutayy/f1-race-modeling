@@ -1,13 +1,12 @@
 """Cross-provider numerical reconciliation for completed F1 races.
 
-The purpose of this module is data verification, not prediction. It compares the
-same completed race across Jolpica, OpenF1 and FastF1 after normalizing each source
-into a deliberately small canonical result schema. A mismatch is reported; it is
-never silently repaired by majority vote.
+This module verifies completed-race facts; it does not predict or silently repair
+provider disagreements. Jolpica, OpenF1 and FastF1 are normalized into one explicit
+schema. Hard classification fields must agree. Secondary fields are compared when at
+least two providers actually expose evidence; missing evidence remains UNKNOWN.
 
-Driver identity uses the race number exposed by each source (Jolpica ``Results.number``,
-OpenF1 ``driver_number`` and FastF1 ``DriverNumber``). Names/codes are retained only
-as audit context and are never used to force a match when numbers disagree.
+Driver identity uses the race number exposed by each source. Names/codes are audit
+context only and are never used to force a match when numbers disagree.
 """
 
 from __future__ import annotations
@@ -26,7 +25,28 @@ import pandas as pd
 from .data import JsonCache
 from .openf1_live import OpenF1Client
 
-CANONICAL_FIELDS = ("position", "laps", "status_class")
+HARD_FIELDS = ("position", "laps", "status_class")
+SECONDARY_FIELDS = ("grid_position", "pit_stops", "points")
+FIELD_SEMANTICS = {
+    "position": "Provider-reported final/classified position.",
+    "laps": (
+        "Jolpica Results.laps; OpenF1 session_result.number_of_laps; FastF1 Results.Laps "
+        "when present, otherwise maximum observed FastF1 LapNumber."
+    ),
+    "status_class": (
+        "Conservative normalized class: finished, classified_lapped, dnf, dns or dsq. "
+        "Raw provider status is retained for audit."
+    ),
+    "grid_position": (
+        "Jolpica/FastF1 starting-grid position when supplied. OpenF1 session_result has "
+        "no directly equivalent field in this reconciliation contract."
+    ),
+    "pit_stops": (
+        "Count of provider pit-stop observations. Missing pit evidence stays UNKNOWN, "
+        "never zero. Equal counts do not prove identical timing semantics."
+    ),
+    "points": "Provider-reported race points when available; missing values stay UNKNOWN.",
+}
 
 
 @dataclass(frozen=True)
@@ -36,6 +56,9 @@ class ResultRow:
     position: int | None
     laps: int | None
     status_class: str | None
+    grid_position: int | None = None
+    pit_stops: int | None = None
+    points: float | None = None
     status_raw: str | None = None
     driver_code: str | None = None
     driver_name: str | None = None
@@ -53,22 +76,56 @@ class Mismatch:
     reason: str
 
 
-def _positive_int(value: Any, *, allow_zero: bool = False) -> int | None:
+def _finite_number(value: Any) -> float | None:
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    lower = 0 if allow_zero else 1
-    if not np.isfinite(number) or number < lower or not number.is_integer():
+    return number if np.isfinite(number) else None
+
+
+def _positive_int(value: Any, *, allow_zero: bool = False) -> int | None:
+    number = _finite_number(value)
+    if number is None or not number.is_integer():
         return None
-    return int(number)
+    lower = 0 if allow_zero else 1
+    return int(number) if number >= lower else None
+
+
+def _finite_float(value: Any) -> float | None:
+    return _finite_number(value)
 
 
 def _clean_text(value: Any) -> str | None:
+    """Normalize provider text without pandas NA truth-value coercion."""
     if value is None:
         return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
     text = str(value).strip()
     return text or None
+
+
+def _optional_bool(value: Any, *, field: str) -> bool | None:
+    """Accept only explicit boolean encodings; Python truthiness is forbidden."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, (float, np.floating)) and np.isfinite(value) and value in (0.0, 1.0):
+        return bool(int(value))
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1"}:
+            return True
+        if text in {"false", "0"}:
+            return False
+    raise ValueError(f"Unsupported explicit boolean for {field}: {value!r}")
 
 
 def _status_from_text(status: Any, position_text: Any = None) -> str | None:
@@ -88,11 +145,14 @@ def _status_from_text(status: Any, position_text: Any = None) -> str | None:
 
 
 def _openf1_status(row: dict[str, Any]) -> str | None:
-    if bool(row.get("dsq")):
+    dsq = _optional_bool(row.get("dsq"), field="openf1.dsq")
+    dns = _optional_bool(row.get("dns"), field="openf1.dns")
+    dnf = _optional_bool(row.get("dnf"), field="openf1.dnf")
+    if dsq:
         return "dsq"
-    if bool(row.get("dns")):
+    if dns:
         return "dns"
-    if bool(row.get("dnf")):
+    if dnf:
         return "dnf"
     gap = (_clean_text(row.get("gap_to_leader")) or "").upper()
     if "LAP" in gap:
@@ -102,8 +162,30 @@ def _openf1_status(row: dict[str, Any]) -> str | None:
     return None
 
 
-def normalize_jolpica_results(payload: dict[str, Any]) -> tuple[list[ResultRow], dict[str, Any]]:
-    """Normalize one Jolpica race-results response without guessing missing fields."""
+def _pit_counts_jolpica(payload: dict[str, Any] | None) -> tuple[bool, dict[str, int]]:
+    if payload is None:
+        return False, {}
+    try:
+        races = payload["MRData"]["RaceTable"]["Races"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("Malformed Jolpica pit-stop payload") from exc
+    if not isinstance(races, list) or len(races) > 1:
+        raise ValueError("Jolpica pit-stop reconciliation requires zero or one race")
+    counts: dict[str, int] = {}
+    for stop in (races[0].get("PitStops", []) if races else []):
+        if not isinstance(stop, dict):
+            raise ValueError("Jolpica pit-stop row must be an object")
+        driver_id = _clean_text(stop.get("driverId"))
+        if driver_id:
+            counts[driver_id] = counts.get(driver_id, 0) + 1
+    return True, counts
+
+
+def normalize_jolpica_results(
+    payload: dict[str, Any],
+    pit_payload: dict[str, Any] | None = None,
+) -> tuple[list[ResultRow], dict[str, Any]]:
+    """Normalize one Jolpica race response without guessing missing evidence."""
     try:
         races = payload["MRData"]["RaceTable"]["Races"]
     except (KeyError, TypeError) as exc:
@@ -114,6 +196,7 @@ def normalize_jolpica_results(payload: dict[str, Any]) -> tuple[list[ResultRow],
     raw_results = race.get("Results")
     if not isinstance(raw_results, list) or not raw_results:
         raise ValueError("Jolpica race has no Results rows")
+    pit_evidence, pit_counts = _pit_counts_jolpica(pit_payload)
 
     rows: list[ResultRow] = []
     for raw in raw_results:
@@ -123,14 +206,19 @@ def normalize_jolpica_results(payload: dict[str, Any]) -> tuple[list[ResultRow],
         if number is None:
             raise ValueError("Jolpica result row has no valid race driver number")
         driver = raw.get("Driver") if isinstance(raw.get("Driver"), dict) else {}
+        constructor = raw.get("Constructor") if isinstance(raw.get("Constructor"), dict) else {}
         name_parts = [driver.get("givenName"), driver.get("familyName")]
         name = " ".join(str(value).strip() for value in name_parts if _clean_text(value)) or None
+        driver_id = _clean_text(driver.get("driverId"))
         rows.append(ResultRow(
             provider="Jolpica",
             driver_number=number,
             position=_positive_int(raw.get("position")),
             laps=_positive_int(raw.get("laps"), allow_zero=True),
             status_class=_status_from_text(raw.get("status"), raw.get("positionText")),
+            grid_position=_positive_int(raw.get("grid"), allow_zero=True),
+            pit_stops=(pit_counts.get(driver_id, 0) if pit_evidence and driver_id else None),
+            points=_finite_float(raw.get("points")),
             status_raw=_clean_text(raw.get("status")),
             driver_code=_clean_text(driver.get("code")),
             driver_name=name,
@@ -145,6 +233,11 @@ def normalize_jolpica_results(payload: dict[str, Any]) -> tuple[list[ResultRow],
         "circuit_id": _clean_text((race.get("Circuit") or {}).get("circuitId"))
         if isinstance(race.get("Circuit"), dict)
         else None,
+        "constructor_ids": sorted({
+            _clean_text((raw.get("Constructor") or {}).get("constructorId"))
+            for raw in raw_results
+            if isinstance(raw, dict) and isinstance(raw.get("Constructor"), dict)
+        } - {None}),
     }
     return _validated_rows(rows), metadata
 
@@ -152,6 +245,7 @@ def normalize_jolpica_results(payload: dict[str, Any]) -> tuple[list[ResultRow],
 def normalize_openf1_results(
     result_rows: list[dict[str, Any]],
     driver_rows: list[dict[str, Any]] | None = None,
+    pit_rows: list[dict[str, Any]] | None = None,
 ) -> list[ResultRow]:
     if not isinstance(result_rows, list) or not result_rows:
         raise ValueError("OpenF1 session_result rows are empty")
@@ -163,6 +257,15 @@ def normalize_openf1_results(
         if number is not None:
             lookup[number] = driver
 
+    pit_evidence = pit_rows is not None
+    pit_keys: dict[int, set[tuple[Any, Any]]] = {}
+    for raw in pit_rows or []:
+        if not isinstance(raw, dict):
+            raise ValueError("OpenF1 pit row must be an object")
+        number = _positive_int(raw.get("driver_number"))
+        if number is not None:
+            pit_keys.setdefault(number, set()).add((raw.get("lap_number"), raw.get("date")))
+
     rows: list[ResultRow] = []
     for raw in result_rows:
         if not isinstance(raw, dict):
@@ -171,15 +274,17 @@ def normalize_openf1_results(
         if number is None:
             raise ValueError("OpenF1 result row has no valid driver_number")
         driver = lookup.get(number, {})
+        status_class = _openf1_status(raw)
         rows.append(ResultRow(
             provider="OpenF1",
             driver_number=number,
             position=_positive_int(raw.get("position")),
             laps=_positive_int(raw.get("number_of_laps"), allow_zero=True),
-            status_class=_openf1_status(raw),
-            status_raw=(
-                "dsq" if raw.get("dsq") else "dns" if raw.get("dns") else "dnf" if raw.get("dnf") else "classified"
-            ),
+            status_class=status_class,
+            grid_position=None,
+            pit_stops=(len(pit_keys.get(number, set())) if pit_evidence else None),
+            points=None,
+            status_raw=status_class,
             driver_code=_clean_text(driver.get("name_acronym")),
             driver_name=_clean_text(driver.get("full_name")),
         ))
@@ -196,14 +301,19 @@ def normalize_fastf1_results(
     if "DriverNumber" not in frame:
         raise ValueError("FastF1 results lack DriverNumber")
 
+    lap_frame = pd.DataFrame(laps).copy() if laps is not None else pd.DataFrame()
+    lap_evidence = not lap_frame.empty and {"DriverNumber", "LapNumber"} <= set(lap_frame)
+    pit_evidence = lap_evidence and "PitInTime" in lap_frame
     lap_counts: dict[int, int] = {}
-    if laps is not None:
-        lap_frame = pd.DataFrame(laps).copy()
-        if not lap_frame.empty and {"DriverNumber", "LapNumber"} <= set(lap_frame):
-            lap_frame["DriverNumber"] = pd.to_numeric(lap_frame["DriverNumber"], errors="coerce")
-            lap_frame["LapNumber"] = pd.to_numeric(lap_frame["LapNumber"], errors="coerce")
-            for number, group in lap_frame.dropna(subset=["DriverNumber", "LapNumber"]).groupby("DriverNumber"):
-                lap_counts[int(number)] = int(group["LapNumber"].max())
+    pit_counts: dict[int, int] = {}
+    if lap_evidence:
+        lap_frame["DriverNumber"] = pd.to_numeric(lap_frame["DriverNumber"], errors="coerce")
+        lap_frame["LapNumber"] = pd.to_numeric(lap_frame["LapNumber"], errors="coerce")
+        for number, group in lap_frame.dropna(subset=["DriverNumber", "LapNumber"]).groupby("DriverNumber"):
+            driver_number = int(number)
+            lap_counts[driver_number] = int(group["LapNumber"].max())
+            if pit_evidence:
+                pit_counts[driver_number] = int(group["PitInTime"].notna().sum())
 
     rows: list[ResultRow] = []
     for raw in frame.to_dict("records"):
@@ -231,6 +341,9 @@ def normalize_fastf1_results(
             position=position,
             laps=result_laps,
             status_class=status_class,
+            grid_position=_positive_int(raw.get("GridPosition"), allow_zero=True),
+            pit_stops=(pit_counts.get(number, 0) if pit_evidence else None),
+            points=_finite_float(raw.get("Points")),
             status_raw=_clean_text(status),
             driver_code=code,
             driver_name=name,
@@ -268,7 +381,7 @@ def _provider_integrity(provider: str, rows: list[ResultRow]) -> list[Mismatch]:
             "provider classification is not consecutive 1..N",
         ))
     for row in rows:
-        for field in CANONICAL_FIELDS:
+        for field in HARD_FIELDS:
             if getattr(row, field) is None:
                 output.append(Mismatch(
                     provider, provider, row.driver_number, field, None, None, "hard",
@@ -281,6 +394,15 @@ def _row_index(rows: Iterable[ResultRow]) -> dict[int, ResultRow]:
     return {row.driver_number: row for row in rows}
 
 
+def _values_equal(field: str, value_a: Any, value_b: Any) -> bool:
+    if field == "points":
+        try:
+            return bool(np.isclose(float(value_a), float(value_b), atol=1e-9, rtol=0.0))
+        except (TypeError, ValueError):
+            return value_a == value_b
+    return value_a == value_b
+
+
 def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, Any]:
     """Compare normalized provider results without repairing disagreements."""
     if len(provider_rows) < 2:
@@ -288,6 +410,7 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
     normalized = {name: _validated_rows(rows) for name, rows in provider_rows.items()}
     providers = sorted(normalized)
     mismatches: list[Mismatch] = []
+    insufficient_secondary: list[dict[str, Any]] = []
 
     for provider in providers:
         mismatches.extend(_provider_integrity(provider, normalized[provider]))
@@ -309,12 +432,28 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                 ))
             for number in sorted(left_numbers & right_numbers):
                 a, b = left[number], right[number]
-                for field in CANONICAL_FIELDS:
+                for field in HARD_FIELDS:
                     value_a, value_b = getattr(a, field), getattr(b, field)
                     if value_a != value_b:
                         mismatches.append(Mismatch(
                             provider_a, provider_b, number, field, value_a, value_b, "hard",
                             "provider values disagree",
+                        ))
+                for field in SECONDARY_FIELDS:
+                    value_a, value_b = getattr(a, field), getattr(b, field)
+                    if value_a is None or value_b is None:
+                        insufficient_secondary.append({
+                            "provider_a": provider_a,
+                            "provider_b": provider_b,
+                            "driver_number": number,
+                            "field": field,
+                            "value_a": value_a,
+                            "value_b": value_b,
+                        })
+                    elif not _values_equal(field, value_a, value_b):
+                        mismatches.append(Mismatch(
+                            provider_a, provider_b, number, field, value_a, value_b, "warning",
+                            "secondary provider values disagree; no truth is elected",
                         ))
                 if a.driver_code and b.driver_code and a.driver_code.upper() != b.driver_code.upper():
                     mismatches.append(Mismatch(
@@ -325,22 +464,32 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
     hard = [row for row in mismatches if row.severity == "hard"]
     warning = [row for row in mismatches if row.severity == "warning"]
     row_counts = {provider: len(rows) for provider, rows in normalized.items()}
+    normalized_payload = {
+        provider: [asdict(row) for row in rows]
+        for provider, rows in normalized.items()
+    }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "cross_provider_completed_race_reconciliation",
         "providers": providers,
         "row_counts": row_counts,
         "passed": not hard,
         "hard_mismatch_count": len(hard),
         "warning_count": len(warning),
+        "insufficient_secondary_count": len(insufficient_secondary),
         "mismatches": [asdict(row) for row in mismatches],
-        "normalized": {
-            provider: [asdict(row) for row in rows]
-            for provider, rows in normalized.items()
+        "insufficient_secondary": insufficient_secondary,
+        "normalized": normalized_payload,
+        "normalized_sha256": {
+            provider: _sha256_json(rows)
+            for provider, rows in normalized_payload.items()
         },
+        "field_semantics": FIELD_SEMANTICS,
         "policy": {
             "identity_key": "race driver number",
-            "hard_fields": list(CANONICAL_FIELDS),
+            "hard_fields": list(HARD_FIELDS),
+            "secondary_fields": list(SECONDARY_FIELDS),
+            "missing_secondary_is_unknown": True,
             "repair_disagreements": False,
             "majority_vote": False,
         },
@@ -359,17 +508,18 @@ def _write_json(path: Path, value: Any) -> None:
 
 def collect_jolpica_raw(year: int, round_number: int, cache: Path) -> dict[str, Any]:
     client = JsonCache(Path(cache) / "jolpica")
-    url = f"https://api.jolpi.ca/ergast/f1/{year}/{round_number}/results/?limit=100"
-    payload = client.get(url)
+    base = f"https://api.jolpi.ca/ergast/f1/{year}/{round_number}"
+    results = client.get(f"{base}/results/?limit=100")
+    pitstops = client.get(f"{base}/pitstops/?limit=200")
     try:
-        total = int(payload["MRData"]["total"])
-        races = payload["MRData"]["RaceTable"]["Races"]
+        total = int(results["MRData"]["total"])
+        races = results["MRData"]["RaceTable"]["Races"]
         returned = len(races[0]["Results"]) if len(races) == 1 else 0
     except (KeyError, TypeError, ValueError, IndexError) as exc:
         raise ValueError("Malformed Jolpica reconciliation response") from exc
     if total != returned:
         raise ValueError(f"Jolpica reconciliation response is incomplete: total={total}, rows={returned}")
-    return payload
+    return {"results": results, "pitstops": pitstops, "provenance": client.provenance}
 
 
 def collect_openf1_raw(session_key: int) -> dict[str, Any]:
@@ -409,8 +559,11 @@ def collect_fastf1_raw(year: int, round_number: int, cache: Path) -> dict[str, A
         "RoundNumber": int(event.get("RoundNumber")),
         "EventDate": str(event.get("EventDate")),
     }
-    lap_columns = [column for column in ("DriverNumber", "LapNumber") if column in session.laps]
-    if set(lap_columns) != {"DriverNumber", "LapNumber"}:
+    lap_columns = [
+        column for column in ("DriverNumber", "LapNumber", "PitInTime")
+        if column in session.laps
+    ]
+    if not {"DriverNumber", "LapNumber"} <= set(lap_columns):
         raise ValueError("FastF1 laps lack DriverNumber/LapNumber")
     return {
         "event": event_meta,
@@ -428,7 +581,7 @@ def reconcile_completed_race(
     cache: Path,
     output: Path,
 ) -> dict[str, Any]:
-    """Collect three providers, persist raw snapshots/hashes, and fail visibly on disagreement."""
+    """Collect three providers, persist raw snapshots/hashes, and report disagreements."""
     output = Path(output)
     raw_dir = output / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -441,8 +594,12 @@ def reconcile_completed_race(
     _write_json(raw_dir / "openf1.json", openf1)
     _write_json(raw_dir / "fastf1.json", fastf1)
 
-    jolpica_rows, jolpica_meta = normalize_jolpica_results(jolpica)
-    openf1_rows = normalize_openf1_results(openf1["session_result"], openf1["drivers"])
+    jolpica_rows, jolpica_meta = normalize_jolpica_results(
+        jolpica["results"], jolpica["pitstops"]
+    )
+    openf1_rows = normalize_openf1_results(
+        openf1["session_result"], openf1["drivers"], openf1["pit"]
+    )
     fastf1_rows = normalize_fastf1_results(fastf1["results"], fastf1["laps"])
 
     session = openf1["session"]
@@ -477,12 +634,17 @@ def reconcile_completed_race(
         "limitations": [
             "Agreement among public providers does not make them statistically independent sources.",
             "Result reconciliation verifies completed-race facts, not live publication latency.",
+            "FastF1 lap count may be derived from maximum observed LapNumber when Results.Laps is absent.",
+            "Secondary fields are compared only when both providers expose evidence; missing evidence stays unknown.",
             "A provider disagreement is reported and never resolved by majority vote.",
             "OpenF1 session_key is explicit; this tool does not guess which session belongs to a round.",
         ],
     })
     _write_json(output / "reconciliation.json", report)
     pd.DataFrame(report["mismatches"]).to_csv(output / "mismatches.csv", index=False)
+    pd.DataFrame(report["insufficient_secondary"]).to_csv(
+        output / "insufficient_secondary.csv", index=False
+    )
     return report
 
 
@@ -505,6 +667,7 @@ def main(argv=None) -> None:
         "passed": report["passed"],
         "hard_mismatch_count": report["hard_mismatch_count"],
         "warning_count": report["warning_count"],
+        "insufficient_secondary_count": report["insufficient_secondary_count"],
         "output": str(args.output),
     }, indent=2))
     if not report["passed"]:
