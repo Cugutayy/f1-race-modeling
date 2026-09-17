@@ -2,18 +2,20 @@ name: Foundation model benchmark
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/foundation-benchmark.yml'
+      - 'src/f1_research/cli.py'
 
 permissions:
   contents: read
 
-concurrency:
-  group: foundation-benchmark-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       PYTHONUNBUFFERED: '1'
       OMP_NUM_THREADS: '4'
@@ -33,17 +35,18 @@ jobs:
             --years 2022 2023 2024 2025 2026 \
             --output reports/foundation/history.csv \
             --cache .cache/jolpica
-      - name: Run full TabICLv2 on the same sealed protocol
+      - name: Run full-default TabICLv2 without duplicate ensemble refits
         run: |
           python -m f1_research benchmark-v2 \
             --input reports/foundation/history.csv \
             --output reports/foundation/benchmark \
             --test-events 12 \
-            --tuning-events 6 \
+            --tuning-events 2 \
             --calibration-events 4 \
             --min-fit-events 20 \
             --models tabicl_v2 \
-            --max-specs-per-model 1
+            --max-specs-per-model 1 \
+            --no-ensemble
       - name: Print sealed summary and model selection
         run: |
           cat reports/foundation/benchmark/summary.csv
@@ -57,3 +60,4 @@ jobs:
             reports/foundation/history.provenance.json
             reports/foundation/benchmark/
           retention-days: 14
+          if-no-files-found: error
