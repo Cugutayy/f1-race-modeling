@@ -23,7 +23,7 @@ from .lap_mixture import attach_regime_labels, fit_mixture
 from .openf1_live import OpenF1Client
 from .strategy_calibration import calibrate_strategy_priors, save_strategy_priors
 
-ENDPOINTS = ("laps", "stints", "weather", "pit", "race_control")
+ENDPOINTS = ("laps", "stints", "weather", "pit", "race_control", "session_result")
 
 
 def _write_json(path: Path, value: Any) -> dict[str, Any]:
