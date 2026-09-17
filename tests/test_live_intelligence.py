@@ -7,7 +7,12 @@ import pytest
 from f1_research.demo import synthetic_history
 from f1_research.features import FEATURES, build_features
 from f1_research.live_state import RaceStateStore
-from f1_research.modern_models import CandidateSpec, build_estimator, normalized_rank_target, tune_forward_events
+from f1_research.modern_models import (
+    CandidateSpec,
+    build_estimator,
+    normalized_rank_target,
+    tune_forward_events,
+)
 from f1_research.plackett_luce import PlackettLuceRanker
 from f1_research.strategy import SimulationConfig, compare_pit_windows, predict_from_state
 
