@@ -1,4 +1,5 @@
 import ModelEvidencePanel from "./model-evidence-panel";
+import ProviderHealth from "./provider-health";
 import RaceIntelligence from "./race-intelligence";
 
 export default function Page() {
@@ -6,6 +7,7 @@ export default function Page() {
     <>
       <RaceIntelligence />
       <ModelEvidencePanel />
+      <ProviderHealth />
     </>
   );
 }
