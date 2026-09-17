@@ -43,11 +43,19 @@ def _select_temperature(events: list[pd.DataFrame], score_fn) -> float:
 
 def _tune_pl(frame: pd.DataFrame, tuning_events: int, min_fit_events: int,
              l2_values=(0.5, 2.0, 5.0, 15.0, 50.0)) -> tuple[float, pd.DataFrame]:
+    """Tune PL regularization on winner log loss from walk-forward tuning events.
+
+    The tuning temperature is optimized on the same designated tuning block solely to
+    compare L2 candidates. It is discarded afterwards; the selected final PL model is
+    recalibrated on the later, disjoint outer calibration block.
+    """
     events = frame[["event_id", "date"]].drop_duplicates().sort_values(["date", "event_id"])
     tune_ids = events.iloc[-tuning_events:].event_id.tolist()
     rows = []
     for l2 in l2_values:
-        losses = []
+        rank_losses = []
+        predicted: dict[str, np.ndarray] = {}
+        tuning_frames: dict[str, pd.DataFrame] = {}
         error = None
         try:
             for event_id in tune_ids:
@@ -56,14 +64,50 @@ def _tune_pl(frame: pd.DataFrame, tuning_events: int, min_fit_events: int,
                 if train.event_id.nunique() < min_fit_events:
                     continue
                 model = PlackettLuceRanker(l2=l2).fit(train)
-                losses.append(score_event(target, model.predict(target), 1.0)[0]["position_mae"])
+                raw_scores = np.asarray(model.predict(target), dtype=float)
+                measured, _ = score_event(target, raw_scores, 1.0)
+                rank_losses.append(float(measured["position_mae"]))
+                predicted[str(event_id)] = raw_scores
+                tuning_frames[str(event_id)] = target
+            if not predicted:
+                raise ValueError("PL candidate had no eligible tuning events")
+            ordered_frames = [tuning_frames[str(event_id)] for event_id in tune_ids if str(event_id) in predicted]
+            temperature = _select_temperature(
+                ordered_frames,
+                lambda event: predicted[str(event.event_id.iloc[0])],
+            )
+            probability_losses = []
+            for event in ordered_frames:
+                scores = predicted[str(event.event_id.iloc[0])]
+                measured, _ = score_event(event, scores, temperature)
+                probability_losses.append(float(measured["winner_log_loss"]))
+            rows.append({
+                "model": "plackett_luce",
+                "l2": l2,
+                "events": len(rank_losses),
+                "mean_winner_log_loss": float(np.mean(probability_losses)),
+                "mean_position_mae": float(np.mean(rank_losses)),
+                "tuning_temperature": temperature,
+                "error": None,
+            })
         except (ValueError, RuntimeError) as exc:
             error = str(exc)
-        rows.append({"model": "plackett_luce", "l2": l2, "events": len(losses),
-                     "mean_position_mae": float(np.mean(losses)) if losses and not error else np.inf,
-                     "error": error})
-    table = pd.DataFrame(rows).sort_values(["mean_position_mae", "l2"])
-    valid = table[np.isfinite(table.mean_position_mae)]
+            rows.append({
+                "model": "plackett_luce",
+                "l2": l2,
+                "events": len(rank_losses),
+                "mean_winner_log_loss": np.inf,
+                "mean_position_mae": float(np.mean(rank_losses)) if rank_losses else np.inf,
+                "tuning_temperature": np.nan,
+                "error": error,
+            })
+    table = pd.DataFrame(rows).sort_values(
+        ["mean_winner_log_loss", "mean_position_mae", "l2"],
+        na_position="last",
+    )
+    valid = table[
+        np.isfinite(table.mean_winner_log_loss) & np.isfinite(table.mean_position_mae)
+    ]
     if valid.empty:
         raise ValueError("No Plackett-Luce candidate completed tuning")
     return float(valid.iloc[0].l2), table.reset_index(drop=True)
@@ -88,7 +132,9 @@ def _split_blocks(features: pd.DataFrame, test_events: int, tuning_events: int,
 def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: int = 6,
                  calibration_events: int = 4, min_fit_events: int = 20,
                  modern_names: tuple[str, ...] = ("hist_gradient_boosting", "extra_trees"),
-                 max_specs_per_model: int = 4) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+                 max_specs_per_model: int = 4,
+                 modern_selection_metric: str = "winner_log_loss",
+                 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     features = build_features(validate(frame))
     split = _split_blocks(features, test_events, tuning_events, calibration_events, min_fit_events)
     pre_cal_ids = split["fit"] + split["tuning"]
@@ -98,8 +144,13 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
 
     modern_specs = candidate_specs(modern_names)
     modern_best, modern_table = tune_forward_events(
-        pre_cal, specs=modern_specs, tuning_events=tuning_events,
-        min_fit_events=min_fit_events, max_specs_per_model=max_specs_per_model)
+        pre_cal,
+        specs=modern_specs,
+        tuning_events=tuning_events,
+        min_fit_events=min_fit_events,
+        max_specs_per_model=max_specs_per_model,
+        selection_metric=modern_selection_metric,
+    )
     modern_model = fit_selected(pre_cal, modern_best)
 
     pl_l2, pl_table = _tune_pl(pre_cal, tuning_events, min_fit_events)
@@ -144,13 +195,21 @@ def benchmark_v2(frame: pd.DataFrame, *, test_events: int = 12, tuning_events: i
         "protocol": "disjoint chronological fit -> tuning -> calibration -> sealed test",
         "split": split,
         "selected_modern": asdict(modern_best),
-        "modern_tuning": modern_table.replace({np.inf: None}).to_dict("records"),
+        "modern_selection_metric": modern_selection_metric,
+        "modern_tuning_temperature_is_final": False,
+        "modern_tuning": modern_table.replace({np.inf: None, -np.inf: None}).to_dict("records"),
         "selected_pl_l2": pl_l2,
-        "pl_tuning": pl_table.replace({np.inf: None}).to_dict("records"),
+        "pl_selection_metric": "winner_log_loss",
+        "pl_tuning_temperature_is_final": False,
+        "pl_tuning": pl_table.replace({np.inf: None, -np.inf: None}).to_dict("records"),
         "temperatures": temperatures,
         "pl_optimization": pl_model.optimization_,
         "feature_schema": FEATURES,
         "test_updates_model": False,
+        "selection_note": (
+            "Tuning-block temperatures compare hyperparameters only; all final model temperatures "
+            "are re-estimated on the disjoint calibration block."
+        ),
     }
     return pd.DataFrame(metrics), pd.DataFrame(predictions), audit
 
@@ -172,6 +231,7 @@ def save_v2_report(frame: pd.DataFrame, metrics: pd.DataFrame, predictions: pd.D
         "limitations": [
             "This benchmark uses retrospective source snapshots unless provenance proves as-published availability.",
             "The sealed test block is not used for model, hyperparameter or temperature selection.",
+            "Tuning-block log loss is used for model selection and is not reported as sealed performance evidence.",
             "Public data does not expose full team telemetry, fuel load, setup or tyre internal temperatures.",
             "A foundation model is a challenger, not automatically preferred over simpler baselines.",
         ],
