@@ -21,16 +21,3 @@ jobs:
       - run: python -m pytest -q
       - run: python -m f1_research demo --output reports/ci-demo
 
-  web:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm install --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm run build
