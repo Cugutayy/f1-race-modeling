@@ -42,22 +42,21 @@ def test_nonfinisher_missing_position_is_evidence_gap_not_hard_mismatch():
     assert all(item["field"] == "position" for item in report["insufficient_hard_evidence"])
 
 
-def test_finished_driver_missing_position_remains_hard_failure():
+def test_classified_driver_missing_position_is_explicit_gap_not_contradiction():
     report = reconcile_results({
         "Jolpica": _provider_rows("Jolpica", target_position=2, target_status="finished"),
         "OpenF1": _provider_rows("OpenF1", target_position=None, target_status="finished"),
     })
 
-    assert report["passed"] is False
-    assert report["verification_status"] == "FAIL"
+    assert report["passed"] is True
+    assert report["verification_status"] == "PASS_WITH_GAPS"
+    assert report["hard_mismatch_count"] == 0
     assert any(
-        row["provider_a"] == "OpenF1"
-        and row["provider_b"] == "OpenF1"
+        row["provider"] == "OpenF1"
         and row["field"] == "position"
-        and row["severity"] == "hard"
-        for row in report["mismatches"]
+        and "classified" in row["reason"]
+        for row in report["insufficient_hard_evidence"]
     )
-
 
 def test_openf1_points_are_preserved_as_secondary_evidence():
     rows = normalize_openf1_results([
