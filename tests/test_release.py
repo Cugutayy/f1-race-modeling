@@ -4,7 +4,7 @@ import pandas as pd
 from sklearn.dummy import DummyRegressor
 
 from f1_research import release as rel
-from f1_research.model_registry import load_manifest
+from f1_research.model_registry import load_manifest, sha256_file
 
 
 def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
@@ -44,4 +44,5 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
                                calibration_events=2, min_fit_events=2)
     manifest = load_manifest(out / "model_manifest.json", model_path=out / "model.joblib")
     assert result["model_id"] == manifest.model_id
+    assert manifest.calibration_sha256 == sha256_file(out / "calibration.json")
     assert json.loads((out / "benchmark" / "report.json").read_text())["test_events"] == 2
