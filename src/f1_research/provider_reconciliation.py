@@ -463,36 +463,31 @@ def _provider_integrity(
 
     for row in rows:
         if row.position is None:
-            if _position_required(row):
-                failures.append(Mismatch(
-                    provider,
-                    provider,
-                    row.driver_number,
-                    "position",
-                    None,
-                    None,
-                    "hard",
-                    "provider is missing position for a classified finisher/lapped car",
-                ))
-            else:
-                insufficient.append({
-                    "provider": provider,
-                    "driver_number": row.driver_number,
-                    "field": "position",
-                    "status_class": row.status_class,
-                    "reason": "provider does not expose a final position for this non-finisher",
-                })
+            insufficient.append({
+                "provider": provider,
+                "driver_number": row.driver_number,
+                "field": "position",
+                "status_class": row.status_class,
+                "reason": (
+                    "provider omits final position for a classified finisher/lapped car"
+                    if _position_required(row)
+                    else "provider does not expose a final position for this non-finisher"
+                ),
+            })
         if row.laps is None:
-            failures.append(Mismatch(
-                provider,
-                provider,
-                row.driver_number,
-                "laps",
-                None,
-                None,
-                "hard",
-                "provider is missing completed laps",
-            ))
+            # Some providers omit completed-lap counts for DNS/DSQ/non-finishers.
+            # That is an evidence gap, not proof that the driver completed zero laps.
+            insufficient.append({
+                "provider": provider,
+                "driver_number": row.driver_number,
+                "field": "laps",
+                "status_class": row.status_class,
+                "reason": (
+                    "provider omits completed laps for a classified finisher/lapped car"
+                    if _result_class(row) in {"completed", "classified_lapped"}
+                    else "provider does not expose completed laps for this non-finisher"
+                ),
+            })
         if row.status_class is None:
             failures.append(Mismatch(
                 provider,
@@ -592,7 +587,19 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                         "provider values disagree",
                     ))
 
-                if a.laps != b.laps:
+                if a.laps is None or b.laps is None:
+                    insufficient_hard.append({
+                        "provider_a": provider_a,
+                        "provider_b": provider_b,
+                        "driver_number": number,
+                        "field": "laps",
+                        "value_a": a.laps,
+                        "value_b": b.laps,
+                        "status_a": a.status_class,
+                        "status_b": b.status_class,
+                        "reason": "at least one provider lacks completed-lap evidence",
+                    })
+                elif a.laps != b.laps:
                     mismatches.append(Mismatch(
                         provider_a,
                         provider_b,
@@ -771,13 +778,31 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
             "message": str(exc),
         }
 
+    # Older OpenF1 sessions can omit optional timing collections (notably pit).
+    # Absence must remain explicit evidence instead of discarding otherwise valid
+    # session/meeting/result identity for the whole provider.
+    collections: dict[str, Any] = {}
+    for endpoint in ("laps", "pit"):
+        try:
+            collections[endpoint] = client.get(endpoint, session_key=int(session_key))
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status != 404:
+                raise
+            collections[endpoint] = []
+            optional_collection_errors[endpoint] = {
+                "error_type": type(exc).__name__,
+                "http_status": int(status),
+                "message": str(exc),
+            }
+
     return {
         "session": sessions[0],
         "meeting": meetings[0],
         "session_result": client.get("session_result", session_key=int(session_key)),
         "drivers": client.get("drivers", session_key=int(session_key)),
-        "laps": client.get("laps", session_key=int(session_key)),
-        "pit": client.get("pit", session_key=int(session_key)),
+        "laps": collections["laps"],
+        "pit": collections["pit"],
         "starting_grid": starting_grid,
         "optional_collection_errors": optional_collection_errors,
         "provenance": list(client.provenance),

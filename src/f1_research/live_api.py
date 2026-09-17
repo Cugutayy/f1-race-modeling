@@ -7,6 +7,7 @@ raw capture files and provider credentials never reach the browser.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -15,11 +16,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from .data_truth import assert_trusted_live_state, audit_payload
 from .live_intelligence import combined_live_report, combined_pit_windows, load_strict_artifact
+from .live_protocol import encode as encode_live_envelope
+from .live_protocol import envelope as live_envelope
+from .live_quality import classify as classify_live_quality
+from .monitoring import snapshot as monitoring_snapshot
 from .reliability import reliability_overrides_from_state
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
@@ -68,6 +73,7 @@ def _priors_path() -> Path:
 
 def _evidence_path() -> Path:
     return _path("F1_MODEL_EVIDENCE_PATH", DEFAULT_EVIDENCE)
+
 
 
 def _max_live_age_s() -> float:
@@ -280,6 +286,40 @@ def _telemetry(driver_number: int, limit: int) -> list[dict[str, Any]]:
     return _safe(output)
 
 
+
+def _locations(limit: int) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for line in reversed(_tail_lines(_events_path(), max_bytes=12 * 1024 * 1024)):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        topic = str(item.get("topic") or "").removeprefix("v1/")
+        if topic != "location":
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        try:
+            number = int(payload.get("driver_number"))
+            x = float(payload.get("x"))
+            y = float(payload.get("y"))
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(x) or not np.isfinite(y):
+            continue
+        output.append({
+            "date": payload.get("date") or item.get("received_at"),
+            "driver_number": number,
+            "x": x,
+            "y": y,
+        })
+        if len(output) >= limit:
+            break
+    output.reverse()
+    return _safe(output)
+
+
 def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     state = _read_state()
     truth_audit = _trusted_live_audit(state)
@@ -354,8 +394,11 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
             trusted_live_ready = True
         except HTTPException as exc:
             trusted_live_error = str(exc.detail)
+    quality = classify_live_quality(state_age_s=_state_age_s(state), provider_age_s=_age_s(state.get("latest_provider_event_at")), connection_state=connection_state, max_age_s=_max_live_age_s())
     return JSONResponse(_safe({
         "ok": state_path.exists(),
+        "quality_status": quality.status,
+        "quality_reasons": list(quality.reasons),
         "state_path": str(state_path),
         "state_age_s": _state_age_s(state),
         "provider_event_age_s": _age_s(state.get("latest_provider_event_at")),
@@ -381,6 +424,57 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
     }))
 
 
+
+@app.websocket("/v1/ws")
+async def live_socket(websocket: WebSocket) -> None:
+    expected = os.environ.get("F1_API_TOKEN")
+    supplied = websocket.headers.get("authorization")
+    if expected and supplied != f"Bearer {expected}":
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    sequence = 0
+    last_hash = None
+    try:
+        while True:
+            try:
+                state = _read_state()
+            except HTTPException:
+                await asyncio.sleep(0.5)
+                continue
+            state_hash = live_envelope(
+                sequence=1, event_type="state_probe", state=state, payload={}
+            ).state_sha256
+            if state_hash != last_hash:
+                sequence += 1
+                item = live_envelope(
+                    sequence=sequence,
+                    event_type="state_update",
+                    state=state,
+                    payload={
+                        "session_key": state.get("session_key"),
+                        "current_lap": state.get("current_lap"),
+                        "updated_at": state.get("updated_at"),
+                    },
+                    provider_time=state.get("latest_provider_event_at"),
+                )
+                await websocket.send_text(encode_live_envelope(item))
+                last_hash = state_hash
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        return
+
+
+@app.get("/v1/metrics")
+def metrics(_: None = Depends(_authorize)) -> JSONResponse:
+    state = _read_state()
+    return JSONResponse(_safe(monitoring_snapshot(
+        state,
+        state_age_s=_state_age_s(state),
+        provider_age_s=_age_s(state.get("latest_provider_event_at")),
+    )))
+
+
 @app.get("/v1/evidence")
 def evidence(_: None = Depends(_authorize)) -> JSONResponse:
     return JSONResponse(_safe(_read_model_evidence()))
@@ -395,6 +489,7 @@ def live(
     return JSONResponse(_live_report(total_laps, samples))
 
 
+
 @app.get("/v1/telemetry")
 def telemetry(
     driver_number: int = Query(ge=1, le=999),
@@ -405,6 +500,15 @@ def telemetry(
         "driver_number": driver_number,
         "samples": _telemetry(driver_number, limit),
     })
+
+
+
+@app.get("/v1/locations")
+def locations(
+    limit: int = Query(default=5000, ge=100, le=20000),
+    _: None = Depends(_authorize),
+) -> JSONResponse:
+    return JSONResponse({"samples": _locations(limit)})
 
 
 @app.get("/v1/strategy")

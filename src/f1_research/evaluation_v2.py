@@ -316,6 +316,7 @@ def save_v2_report(
         "schema_version": 2,
         "series": "f1",
         "data_kind": "historical",
+        "test_events": len(set(audit["split"]["test"])),
         "run_id": hashlib.sha256((canonical + predictions.to_csv(index=False)).encode()).hexdigest()[:16],
         "summary": summary.to_dict("records"),
         "metrics": metrics.to_dict("records"),

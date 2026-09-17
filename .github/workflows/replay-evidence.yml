@@ -1,0 +1,48 @@
+name: Historical replay evidence
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/production-readiness-v1]
+    paths:
+      - '.github/workflows/replay-evidence.yml'
+permissions:
+  contents: read
+concurrency:
+  group: replay-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - name: Capture real historical OpenF1 event stream
+        run: |
+          f1-live capture --session-key 9693 --no-stream --output reports/replay/source
+      - name: Replay through production RaceStateStore
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from f1_research.replay import load_jsonl, replay, write_replay
+          source = Path("reports/replay/source/events.jsonl")
+          result = replay(load_jsonl(source), session_key=9693, snapshot_every=250)
+          if result["accepted_count"] <= 0:
+              raise SystemExit("Replay accepted no provider observations")
+          write_replay(Path("reports/replay/replay.json"), result)
+          print(json.dumps({k: result[k] for k in ("source_sha256","event_count","accepted_count","rejected_count")}, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real-replay-2025-australia-${{ github.run_id }}
+          path: reports/replay
+          if-no-files-found: error
+          retention-days: 90
