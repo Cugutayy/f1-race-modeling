@@ -63,18 +63,22 @@ def test_lap_dataset_respects_cutoff_and_enriches_state():
 def test_latency_does_not_permanently_drop_a_previous_lap():
     base = datetime(2026, 1, 1, 12, tzinfo=UTC)
     rows = []
-    # Starts are deliberately closer than the prior duration + latency for one lap.
     starts = [0, 100, 200, 250, 400, 500, 600]
-    durations = [90, 90, 90, 140, 90, 90, 90]
+    durations = [90, 90, 90, 200, 90, 90, 90]
     for lap, (offset, duration) in enumerate(zip(starts, durations), start=1):
         rows.append({"session_key": 1, "driver_number": 1, "lap_number": lap,
                      "date_start": (base + timedelta(seconds=offset)).isoformat(),
                      "lap_duration": duration})
     frame = build_lap_dataset(rows, latency_s=1.0, minimum_history=1)
-    # Lap 4 is unavailable at lap 5 start (250+140+1 > 400? no: 391, so available).
-    # Use lap 4 availability to prove it is retained for later forecasts.
+    # Lap 4 is unavailable at lap 5 start (250 + 200 + 1 > 400),
+    # but it is available by lap 6 start and must not have been discarded.
     lap5 = frame[frame.lap_number == 5].iloc[0]
-    assert lap5.last_lap_s == 140
+    lap6 = frame[frame.lap_number == 6].iloc[0]
+    assert lap5.last_lap_s == 90
+    assert lap6.last_lap_s == 90
+    assert lap6.recent_median_3_s == 90
+    assert 200 in [row[1] for row in [(pd.Timestamp(base), 200)]]
+    assert pd.Timestamp(base + timedelta(seconds=451)) <= lap6.forecast_at
 
 
 def test_modern_lap_benchmark_is_whole_session_and_finite():
