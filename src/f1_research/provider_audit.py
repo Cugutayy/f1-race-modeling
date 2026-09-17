@@ -17,6 +17,7 @@ from typing import Any
 
 import pandas as pd
 
+from .provider_event_identity import build_event_identity
 from .provider_reconciliation import (
     collect_jolpica_raw,
     collect_openf1_raw,
@@ -95,6 +96,8 @@ def collect_fastf1_partial(year: int, round_number: int, cache: Path) -> dict[st
             "EventName": str(raw_event.get("EventName")),
             "RoundNumber": int(raw_event.get("RoundNumber")),
             "EventDate": str(raw_event.get("EventDate")),
+            "Country": str(raw_event.get("Country")),
+            "Location": str(raw_event.get("Location")),
         }
     except Exception as exc:
         errors["event"] = f"{type(exc).__name__}: {exc}"
@@ -184,6 +187,20 @@ def audit_completed_race(
     for provider, payload in raw.items():
         _write_json(raw_dir / f"{provider.lower()}.json", payload)
 
+    event_identity = build_event_identity(
+        year=year,
+        round_number=round_number,
+        openf1_session_key=openf1_session_key,
+        jolpica_raw=raw.get("Jolpica"),
+        openf1_raw=raw.get("OpenF1"),
+        fastf1_raw=raw.get("FastF1"),
+    )
+    if not event_identity["verified"]:
+        provider_errors.setdefault(
+            "event_identity",
+            "failed required checks: " + ", ".join(event_identity["failures"]),
+        )
+
     normalized: dict[str, list[Any]] = {}
     if "Jolpica" in raw:
         try:
@@ -212,7 +229,7 @@ def audit_completed_race(
         except Exception as exc:
             provider_errors["FastF1.normalize"] = f"{type(exc).__name__}: {exc}"
 
-    if len(normalized) >= 2:
+    if len(normalized) == 3 and event_identity["verified"]:
         report = reconcile_results(normalized)
         report["schema_version"] = 3
         report.update({
@@ -221,6 +238,8 @@ def audit_completed_race(
             "openf1_session_key": int(openf1_session_key),
             "retrieved_at": datetime.now(UTC).isoformat(),
             "provider_errors": provider_errors,
+            "event_identity": event_identity,
+            "event_metadata": event_identity["providers"],
             "raw_sha256": {name: _json_sha256(value) for name, value in raw.items()},
         })
         if provider_errors:
@@ -228,13 +247,20 @@ def audit_completed_race(
             report["verification_status"] = "FAIL"
             report["hard_mismatch_count"] = int(report["hard_mismatch_count"]) + len(provider_errors)
     else:
+        if len(normalized) != 3:
+            provider_errors.setdefault(
+                "audit",
+                f"expected three normalized providers, got {sorted(normalized)}",
+            )
         report = _failure_report(
             year=year,
             round_number=round_number,
             openf1_session_key=openf1_session_key,
-            provider_errors=provider_errors or {"audit": "fewer than two providers normalized"},
+            provider_errors=provider_errors,
             raw_snapshots=raw,
         )
+        report["event_identity"] = event_identity
+        report["event_metadata"] = event_identity["providers"]
 
     report["limitations"] = [
         "Public-provider agreement is not statistical independence or official FIA certification.",
@@ -242,6 +268,8 @@ def audit_completed_race(
         "A provider-specific absence of non-finisher position is retained as an evidence gap, not imputed.",
         "Missing secondary evidence remains unknown rather than zero/false.",
         "Provider disagreements are never repaired by majority vote.",
+        "Result comparison runs only after required same-event metadata checks pass across all three providers.",
+        "Location labels are retained but are not a hard identity key because provider locality semantics differ.",
     ]
 
     _write_json(output / "reconciliation.json", report)

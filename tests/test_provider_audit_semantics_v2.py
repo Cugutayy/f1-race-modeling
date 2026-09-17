@@ -21,7 +21,9 @@ def test_audit_writes_insufficient_hard_evidence_csv(tmp_path, monkeypatch):
     jolpica = {
         "results": {"MRData": {"RaceTable": {"Races": [{
             "season": "2025", "round": "1", "raceName": "Audit GP", "date": "2025-03-16",
-            "Circuit": {"circuitId": "audit"},
+            "time": "04:00:00Z",
+            "Circuit": {"circuitId": "audit", "circuitName": "Audit Ring",
+                        "Location": {"locality": "Audit City", "country": "Australia"}},
             "Results": [
                 {"number": "1", "position": "1", "positionText": "1", "grid": "1",
                  "laps": "57", "points": "25", "status": "Finished",
@@ -35,7 +37,14 @@ def test_audit_writes_insufficient_hard_evidence_csv(tmp_path, monkeypatch):
         "provenance": [],
     }
     openf1 = {
-        "session": {"session_key": 9693, "session_name": "Race", "year": 2025},
+        "session": {"session_key": 9693, "meeting_key": 1254, "session_name": "Race",
+                    "session_type": "Race", "year": 2025,
+                    "date_start": "2025-03-16T04:00:00+00:00",
+                    "country_name": "Australia", "location": "Audit City",
+                    "is_cancelled": False},
+        "meeting": {"meeting_key": 1254, "meeting_name": "Audit GP", "year": 2025,
+                    "country_name": "Australia", "location": "Audit City",
+                    "is_cancelled": False},
         "session_result": [
             {"driver_number": 1, "position": 1, "number_of_laps": 57, "points": 25,
              "dnf": False, "dns": False, "dsq": False, "gap_to_leader": 0},
@@ -48,7 +57,10 @@ def test_audit_writes_insufficient_hard_evidence_csv(tmp_path, monkeypatch):
         "pit": [],
     }
     fastf1 = {
-        "provider": "FastF1", "fastf1_version": "test", "event": {"RoundNumber": 1},
+        "provider": "FastF1", "fastf1_version": "test",
+        "event": {"EventName": "Audit GP", "RoundNumber": 1,
+                  "EventDate": "2025-03-16 00:00:00", "Country": "Australia",
+                  "Location": "Audit City"},
         "results": [
             {"DriverNumber": "1", "Position": 1, "Laps": 57, "Status": "Finished",
              "Abbreviation": "AAA", "Points": 25},
@@ -71,4 +83,6 @@ def test_audit_writes_insufficient_hard_evidence_csv(tmp_path, monkeypatch):
     assert report["passed"] is True
     assert report["verification_status"] == "PASS_WITH_GAPS"
     assert report["insufficient_hard_count"] > 0
+    assert report["event_identity"]["verified"] is True
+    assert report["event_metadata"]["OpenF1"]["event_name"] == "Audit GP"
     assert (output / "insufficient_hard_evidence.csv").exists()
