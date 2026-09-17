@@ -28,6 +28,32 @@ from .openf1_live import OpenF1Client
 PROVIDERS = ("jolpica", "openf1", "fastf1")
 CRITICAL_FIELDS = ("finish_position", "completed_laps")
 SECONDARY_FIELDS = ("grid_position", "pit_stops", "dnf", "dns", "dsq", "points")
+FIELD_SEMANTICS = {
+    "finish_position": (
+        "Provider-reported final/classified position. A disagreement is never resolved "
+        "by majority vote."
+    ),
+    "completed_laps": (
+        "Jolpica Results.laps; OpenF1 session_result.number_of_laps; FastF1 maximum "
+        "observed LapNumber. FastF1 is therefore derived lap-table evidence, not a "
+        "separate official classification field."
+    ),
+    "grid_position": (
+        "Jolpica/FastF1 reported grid position. OpenF1 session_result does not supply "
+        "an equivalent field here, so that provider may be insufficient."
+    ),
+    "pit_stops": (
+        "Count of provider pit-stop observations. Missing pit datasets remain UNKNOWN, "
+        "never zero. Equal counts do not imply identical pit timing semantics."
+    ),
+    "dnf": (
+        "Provider/result-status retirement classification. Jolpica/FastF1 textual "
+        "statuses are conservatively normalized while raw status text is retained."
+    ),
+    "dns": "Did-not-start status when the provider explicitly supports or states it.",
+    "dsq": "Disqualification status when the provider explicitly supports or states it.",
+    "points": "Provider-reported race points when available; absence remains UNKNOWN.",
+}
 
 
 @dataclass(frozen=True)
@@ -79,6 +105,38 @@ def _float(value: Any) -> float | None:
     return _finite_number(value)
 
 
+def _text(value: Any) -> str | None:
+    """Normalize provider text without ambiguous pandas truth-value coercion."""
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_bool(value: Any, *, field: str) -> bool | None:
+    """Parse only explicit provider boolean encodings; never use Python truthiness."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, (float, np.floating)) and np.isfinite(value) and value in (0.0, 1.0):
+        return bool(int(value))
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1"}:
+            return True
+        if text in {"false", "0"}:
+            return False
+    raise ValueError(f"Unsupported explicit boolean for {field}: {value!r}")
+
+
 def _canonical_hash(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -86,10 +144,10 @@ def _canonical_hash(value: Any) -> str:
 
 def _jolpica_status(status: str | None) -> tuple[bool | None, bool | None, bool | None]:
     """Conservative status mapping; raw text is always retained in the record."""
-    text = str(status or "").strip()
-    upper = text.upper()
-    if not text:
+    text = _text(status)
+    if text is None:
         return None, None, None
+    upper = text.upper()
     dsq = "DISQUAL" in upper or upper == "DSQ"
     dns = "DID NOT START" in upper or upper == "DNS" or "WITHDREW" in upper
     if dsq or dns:
@@ -111,13 +169,14 @@ def normalize_jolpica(
     if not isinstance(results, list) or not results:
         raise ValueError("Jolpica race has no Results")
 
+    pit_evidence_available = pit_payload is not None
     pit_counts: dict[str, int] = {}
-    if pit_payload:
+    if pit_evidence_available:
         pit_races = pit_payload.get("MRData", {}).get("RaceTable", {}).get("Races", [])
         if len(pit_races) > 1:
             raise ValueError("Jolpica pit-stop payload contains multiple races")
         for stop in (pit_races[0].get("PitStops", []) if pit_races else []):
-            driver_id = str(stop.get("driverId") or "")
+            driver_id = _text(stop.get("driverId"))
             if driver_id:
                 pit_counts[driver_id] = pit_counts.get(driver_id, 0) + 1
 
@@ -125,19 +184,24 @@ def normalize_jolpica(
     for result in results:
         driver = result.get("Driver") or {}
         constructor = result.get("Constructor") or {}
-        driver_id = str(driver.get("driverId") or "") or None
-        status_raw = str(result.get("status") or "") or None
+        driver_id = _text(driver.get("driverId"))
+        status_raw = _text(result.get("status"))
         dnf, dns, dsq = _jolpica_status(status_raw)
         number = _integer(driver.get("permanentNumber"))
+        pit_stops = (
+            pit_counts.get(driver_id, 0)
+            if pit_evidence_available and driver_id is not None
+            else None
+        )
         output.append(ProviderDriverRecord(
             provider="jolpica",
             driver_number=number,
             driver_id=driver_id,
-            team=str(constructor.get("constructorId") or "") or None,
+            team=_text(constructor.get("constructorId")),
             finish_position=_integer(result.get("position")),
             grid_position=_integer(result.get("grid"), allow_zero=True),
             completed_laps=_integer(result.get("laps"), allow_zero=True),
-            pit_stops=pit_counts.get(driver_id, 0) if driver_id is not None else None,
+            pit_stops=pit_stops,
             dnf=dnf,
             dns=dns,
             dsq=dsq,
@@ -160,6 +224,7 @@ def normalize_openf1(
         if number is not None:
             driver_lookup[number] = row
 
+    pit_evidence_available = pit_rows is not None
     pit_keys: dict[int, set[tuple[Any, Any]]] = {}
     for row in pit_rows or []:
         number = _integer(row.get("driver_number"))
@@ -172,18 +237,23 @@ def normalize_openf1(
     for row in result_rows:
         number = _integer(row.get("driver_number"))
         meta = driver_lookup.get(number or -1, {})
+        pit_stops = (
+            len(pit_keys.get(number, set()))
+            if pit_evidence_available and number is not None
+            else None
+        )
         output.append(ProviderDriverRecord(
             provider="openf1",
             driver_number=number,
-            driver_id=str(meta.get("name_acronym") or "") or None,
-            team=str(meta.get("team_name") or "") or None,
+            driver_id=_text(meta.get("name_acronym")),
+            team=_text(meta.get("team_name")),
             finish_position=_integer(row.get("position")),
             grid_position=None,
             completed_laps=_integer(row.get("number_of_laps"), allow_zero=True),
-            pit_stops=len(pit_keys.get(number, set())) if number is not None else None,
-            dnf=bool(row.get("dnf")) if row.get("dnf") is not None else None,
-            dns=bool(row.get("dns")) if row.get("dns") is not None else None,
-            dsq=bool(row.get("dsq")) if row.get("dsq") is not None else None,
+            pit_stops=pit_stops,
+            dnf=_optional_bool(row.get("dnf"), field="openf1.dnf"),
+            dns=_optional_bool(row.get("dns"), field="openf1.dns"),
+            dsq=_optional_bool(row.get("dsq"), field="openf1.dsq"),
             points=None,
             status_raw=None,
         ))
@@ -191,10 +261,10 @@ def normalize_openf1(
 
 
 def _fastf1_status(status: Any) -> tuple[bool | None, bool | None, bool | None]:
-    text = str(status or "").strip()
-    upper = text.upper()
-    if not text or upper == "NAN":
+    text = _text(status)
+    if text is None:
         return None, None, None
+    upper = text.upper()
     dsq = "DISQUAL" in upper or upper == "DSQ"
     dns = "DID NOT START" in upper or upper == "DNS" or "WITHDRAW" in upper
     if dsq or dns:
@@ -204,39 +274,44 @@ def _fastf1_status(status: Any) -> tuple[bool | None, bool | None, bool | None]:
     return True, False, False
 
 
-def normalize_fastf1(results: pd.DataFrame, laps: pd.DataFrame) -> list[ProviderDriverRecord]:
+def normalize_fastf1(results: pd.DataFrame, laps: pd.DataFrame | None) -> list[ProviderDriverRecord]:
     if results is None or results.empty:
         raise ValueError("FastF1 results are empty")
     result_frame = results.copy()
     lap_frame = laps.copy() if laps is not None else pd.DataFrame()
 
+    lap_evidence_available = not lap_frame.empty and {
+        "DriverNumber", "LapNumber"
+    } <= set(lap_frame.columns)
+    pit_evidence_available = lap_evidence_available and "PitInTime" in lap_frame.columns
     lap_counts: dict[int, int] = {}
     pit_counts: dict[int, int] = {}
-    if not lap_frame.empty and "DriverNumber" in lap_frame:
+    if lap_evidence_available:
         numbers = pd.to_numeric(lap_frame["DriverNumber"], errors="coerce")
-        lap_numbers = pd.to_numeric(lap_frame.get("LapNumber"), errors="coerce")
+        lap_numbers = pd.to_numeric(lap_frame["LapNumber"], errors="coerce")
         for number in sorted(numbers.dropna().unique()):
             mask = numbers.eq(number)
             driver = int(number)
             finite_laps = lap_numbers[mask].dropna()
-            lap_counts[driver] = int(finite_laps.max()) if not finite_laps.empty else 0
-            if "PitInTime" in lap_frame:
+            if not finite_laps.empty:
+                lap_counts[driver] = int(finite_laps.max())
+            if pit_evidence_available:
                 pit_counts[driver] = int(lap_frame.loc[mask, "PitInTime"].notna().sum())
 
     output: list[ProviderDriverRecord] = []
     for _, row in result_frame.iterrows():
         number = _integer(row.get("DriverNumber"))
-        status_raw = str(row.get("Status") or "") or None
+        status_raw = _text(row.get("Status"))
         dnf, dns, dsq = _fastf1_status(status_raw)
         output.append(ProviderDriverRecord(
             provider="fastf1",
             driver_number=number,
-            driver_id=str(row.get("Abbreviation") or "") or None,
-            team=str(row.get("TeamName") or "") or None,
+            driver_id=_text(row.get("Abbreviation")),
+            team=_text(row.get("TeamName")),
             finish_position=_integer(row.get("Position")),
             grid_position=_integer(row.get("GridPosition"), allow_zero=True),
             completed_laps=lap_counts.get(number) if number is not None else None,
-            pit_stops=pit_counts.get(number, 0) if number is not None else None,
+            pit_stops=(pit_counts.get(number, 0) if pit_evidence_available and number is not None else None),
             dnf=dnf,
             dns=dns,
             dsq=dsq,
@@ -255,7 +330,11 @@ def _value_equal(field: str, left: Any, right: Any) -> bool:
     return left == right
 
 
-def _compare_field(driver_number: int, field: str, records: dict[str, ProviderDriverRecord]) -> FieldComparison:
+def _compare_field(
+    driver_number: int,
+    field: str,
+    records: dict[str, ProviderDriverRecord],
+) -> FieldComparison:
     values = {
         provider: getattr(record, field)
         for provider, record in records.items()
@@ -327,6 +406,7 @@ def reconcile(records: Iterable[ProviderDriverRecord]) -> dict[str, Any]:
         "schema_version": 1,
         "evidence_kind": "cross_provider_race_reconciliation",
         "providers": list(PROVIDERS),
+        "field_semantics": FIELD_SEMANTICS,
         "provider_normalized_sha256": {
             provider: _canonical_hash(normalized[provider]) for provider in PROVIDERS
         },
@@ -350,7 +430,11 @@ def _save_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, default=str, allow_nan=False), encoding="utf-8")
 
 
-def _jolpica_single_race(client: JsonCache, year: int, round_number: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def _jolpica_single_race(
+    client: JsonCache,
+    year: int,
+    round_number: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     base = f"https://api.jolpi.ca/ergast/f1/{year}/{round_number}"
     result = client.get(f"{base}/results/?limit=100")
     pit = client.get(f"{base}/pitstops/?limit=200")
@@ -364,7 +448,11 @@ def _jolpica_race_date(result_payload: dict[str, Any]) -> pd.Timestamp:
     return pd.to_datetime(races[0]["date"], utc=True, errors="raise")
 
 
-def _resolve_openf1_race_session(client: OpenF1Client, year: int, race_date: pd.Timestamp) -> dict[str, Any]:
+def _resolve_openf1_race_session(
+    client: OpenF1Client,
+    year: int,
+    race_date: pd.Timestamp,
+) -> dict[str, Any]:
     sessions = client.get("sessions", year=year, session_name="Race")
     candidates = []
     for row in sessions:
@@ -385,7 +473,12 @@ def _resolve_openf1_race_session(client: OpenF1Client, year: int, race_date: pd.
     return best[0][2]
 
 
-def collect_reconciliation(year: int, round_number: int, output: Path, cache: Path) -> dict[str, Any]:
+def collect_reconciliation(
+    year: int,
+    round_number: int,
+    output: Path,
+    cache: Path,
+) -> dict[str, Any]:
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     raw = output / "raw"
@@ -412,14 +505,17 @@ def collect_reconciliation(year: int, round_number: int, output: Path, cache: Pa
         import fastf1
     except ImportError as exc:
         raise RuntimeError("Install the telemetry extra for three-provider reconciliation") from exc
-    fastf1.Cache.enable_cache(str(cache / "fastf1"))
+    fastf1_cache = cache / "fastf1"
+    fastf1_cache.mkdir(parents=True, exist_ok=True)
+    fastf1.Cache.enable_cache(str(fastf1_cache))
     fast_session = fastf1.get_session(year, round_number, "R")
     fast_session.load(telemetry=False, weather=False, messages=False)
     fast_results = fast_session.results.copy()
     fast_laps = fast_session.laps.copy()
     fast_results.to_csv(raw / "fastf1_results.csv", index=False)
     lap_columns = [
-        column for column in ("DriverNumber", "LapNumber", "PitInTime", "PitOutTime", "LapTime")
+        column
+        for column in ("DriverNumber", "LapNumber", "PitInTime", "PitOutTime", "LapTime")
         if column in fast_laps.columns
     ]
     fast_laps[lap_columns].to_csv(raw / "fastf1_laps.csv", index=False)
