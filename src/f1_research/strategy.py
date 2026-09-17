@@ -1,7 +1,7 @@
 """Transparent live race/strategy Monte Carlo engine.
 
 This is deliberately a simulation layer, not a claim that public broadcast data
-contains team-only fuel, tyre-temperature or setup information.  Every uncertain
+contains team-only fuel, tyre-temperature or setup information. Every uncertain
 quantity has an explicit default and can later be replaced by a learned model.
 """
 
@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
-
 
 COMPOUND_LIFE = {"SOFT": 18, "MEDIUM": 28, "HARD": 40, "INTERMEDIATE": 25, "WET": 30}
 COMPOUND_PACE = {"SOFT": -0.35, "MEDIUM": 0.0, "HARD": 0.35, "INTERMEDIATE": 2.5, "WET": 5.0}
@@ -89,10 +88,12 @@ def _robust_pace(laps: list[float], fallback: float | None = None) -> tuple[floa
     slope = 0.0
     if len(clean) >= 4:
         recent = clean[-6:]
-        pair_slopes = [(recent[j] - recent[i]) / (j - i)
-                       for i in range(len(recent)) for j in range(i + 1, len(recent))]
+        pair_slopes = [
+            (recent[j] - recent[i]) / (j - i)
+            for i in range(len(recent))
+            for j in range(i + 1, len(recent))
+        ]
         slope = float(np.median(pair_slopes)) if pair_slopes else 0.0
-    # Positive degradation only; apparent improvement is likely fuel/track evolution too.
     return pace, uncertainty, max(0.0, slope)
 
 
@@ -107,7 +108,13 @@ def drivers_from_state(snapshot: dict[str, Any], config: SimulationConfig | None
         if not isinstance(position, int) or position < 1:
             continue
         gap = row.get("gap_to_leader_s")
-        gap = 0.0 if position == 1 else float(gap) if isinstance(gap, (int, float)) and np.isfinite(gap) else None
+        gap = (
+            0.0
+            if position == 1
+            else float(gap)
+            if isinstance(gap, (int, float)) and np.isfinite(gap)
+            else None
+        )
         laps = row.get("recent_laps_s") or []
         fallback = row.get("last_lap_s")
         try:
@@ -118,25 +125,29 @@ def drivers_from_state(snapshot: dict[str, Any], config: SimulationConfig | None
     if len(observed) < 2:
         raise ValueError("At least two drivers need position and pace observations")
 
-    # Missing gaps are conservatively reconstructed from position rather than treated as zero.
     known_gaps = [item[2] for item in observed if item[2] is not None]
-    step = max(1.0, float(np.median(np.diff(sorted(set(known_gaps))))) if len(set(known_gaps)) >= 2 else 2.0)
+    step = max(
+        1.0,
+        float(np.median(np.diff(sorted(set(known_gaps))))) if len(set(known_gaps)) >= 2 else 2.0,
+    )
     result = []
     for row, position, gap, pace, uncertainty, degradation in observed:
         if gap is None:
             gap = step * (position - 1)
-        result.append(DriverInput(
-            driver_number=int(row["driver_number"]),
-            label=row.get("acronym") or row.get("full_name") or str(row["driver_number"]),
-            current_position=position,
-            gap_to_leader_s=max(0.0, float(gap)),
-            pace_s=pace,
-            pace_uncertainty_s=min(max(uncertainty, 0.15), 3.0),
-            degradation_s_per_lap=min(degradation, config.max_degradation_s_per_lap),
-            tyre_age=max(0, int(row.get("tyre_age") or 0)),
-            compound=str(row.get("compound") or "MEDIUM").upper(),
-            pit_stops=max(0, int(row.get("pit_stops") or 0)),
-        ))
+        result.append(
+            DriverInput(
+                driver_number=int(row["driver_number"]),
+                label=row.get("acronym") or row.get("full_name") or str(row["driver_number"]),
+                current_position=position,
+                gap_to_leader_s=max(0.0, float(gap)),
+                pace_s=pace,
+                pace_uncertainty_s=min(max(uncertainty, 0.15), 3.0),
+                degradation_s_per_lap=min(degradation, config.max_degradation_s_per_lap),
+                tyre_age=max(0, int(row.get("tyre_age") or 0)),
+                compound=str(row.get("compound") or "MEDIUM").upper(),
+                pit_stops=max(0, int(row.get("pit_stops") or 0)),
+            )
+        )
     return sorted(result, key=lambda item: item.current_position)
 
 
@@ -146,9 +157,12 @@ def _default_pit_offset(driver: DriverInput) -> int | None:
     return max(1, remaining) if remaining <= 12 else None
 
 
-def simulate(drivers: list[DriverInput], laps_remaining: int,
-             strategies: dict[int, Strategy] | None = None,
-             config: SimulationConfig | None = None) -> tuple[list[SimulationResult], dict[str, Any]]:
+def simulate(
+    drivers: list[DriverInput],
+    laps_remaining: int,
+    strategies: dict[int, Strategy] | None = None,
+    config: SimulationConfig | None = None,
+) -> tuple[list[SimulationResult], dict[str, Any]]:
     """Simulate coherent finishing orders from the current race state."""
     config = config or SimulationConfig()
     strategies = strategies or {}
@@ -177,7 +191,6 @@ def simulate(drivers: list[DriverInput], laps_remaining: int,
         total = gap
         age = np.full(n, driver.tyre_age, dtype=float)
         compound = driver.compound
-        stopped = np.zeros(n, dtype=bool)
 
         for lap in range(1, laps_remaining + 1):
             compound_delta = COMPOUND_PACE.get(compound, 0.0)
@@ -193,15 +206,11 @@ def simulate(drivers: list[DriverInput], laps_remaining: int,
                 total += pit_loss
                 age[:] = 0
                 compound = next_compound
-                stopped[:] = True
 
-        # Retirement time is represented separately and mapped behind classified finishers.
         dnf_probability = 1 - (1 - config.dnf_hazard_per_lap) ** laps_remaining
         dnf[:, j] = rng.random(n) < dnf_probability
         remaining[:, j] = total
 
-    # Classified cars rank by simulated remaining time. DNFs are placed behind finishers;
-    # their relative order remains time-based only as a neutral approximation.
     ranking_score = remaining + dnf.astype(float) * 1_000_000.0
     orders = np.argsort(ranking_score, axis=1, kind="stable")
     ranks = np.empty_like(orders)
@@ -210,18 +219,20 @@ def simulate(drivers: list[DriverInput], laps_remaining: int,
     results = []
     for j, driver in enumerate(drivers):
         r = ranks[:, j]
-        results.append(SimulationResult(
-            driver_number=driver.driver_number,
-            label=driver.label,
-            expected_position=float(r.mean()),
-            win_probability=float((r == 1).mean()),
-            podium_probability=float((r <= min(3, m)).mean()),
-            top10_probability=float((r <= min(10, m)).mean()),
-            position_p10=int(np.quantile(r, 0.10, method="inverted_cdf")),
-            position_p90=int(np.quantile(r, 0.90, method="inverted_cdf")),
-            dnf_probability=float(dnf[:, j].mean()),
-            mean_remaining_time_s=float(remaining[:, j].mean()),
-        ))
+        results.append(
+            SimulationResult(
+                driver_number=driver.driver_number,
+                label=driver.label,
+                expected_position=float(r.mean()),
+                win_probability=float((r == 1).mean()),
+                podium_probability=float((r <= min(3, m)).mean()),
+                top10_probability=float((r <= min(10, m)).mean()),
+                position_p10=int(np.quantile(r, 0.10, method="inverted_cdf")),
+                position_p90=int(np.quantile(r, 0.90, method="inverted_cdf")),
+                dnf_probability=float(dnf[:, j].mean()),
+                mean_remaining_time_s=float(remaining[:, j].mean()),
+            )
+        )
     audit = {
         "samples": n,
         "seed": config.seed,
@@ -234,9 +245,12 @@ def simulate(drivers: list[DriverInput], laps_remaining: int,
     return results, audit
 
 
-def predict_from_state(snapshot: dict[str, Any], total_laps: int,
-                       strategies: dict[int, Strategy] | None = None,
-                       config: SimulationConfig | None = None) -> dict[str, Any]:
+def predict_from_state(
+    snapshot: dict[str, Any],
+    total_laps: int,
+    strategies: dict[int, Strategy] | None = None,
+    config: SimulationConfig | None = None,
+) -> dict[str, Any]:
     current_lap = snapshot.get("current_lap")
     if not isinstance(current_lap, int) or current_lap < 1:
         raise ValueError("Current lap is unavailable")
@@ -257,10 +271,14 @@ def predict_from_state(snapshot: dict[str, Any], total_laps: int,
     }
 
 
-def compare_pit_windows(snapshot: dict[str, Any], total_laps: int, driver_number: int,
-                        offsets: tuple[int, ...] = (1, 2, 3, 4, 5),
-                        compounds: tuple[str, ...] = ("SOFT", "MEDIUM", "HARD"),
-                        config: SimulationConfig | None = None) -> list[dict[str, Any]]:
+def compare_pit_windows(
+    snapshot: dict[str, Any],
+    total_laps: int,
+    driver_number: int,
+    offsets: tuple[int, ...] = (1, 2, 3, 4, 5),
+    compounds: tuple[str, ...] = ("SOFT", "MEDIUM", "HARD"),
+    config: SimulationConfig | None = None,
+) -> list[dict[str, Any]]:
     """Counterfactual pit scenarios using common random seeds for lower comparison noise."""
     config = config or SimulationConfig()
     output = []
