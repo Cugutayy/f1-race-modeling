@@ -34,11 +34,11 @@ jobs:
           cache-dependency-path: requirements-lock.txt
       - run: python -m pip install -r requirements-lock.txt
       - run: python -m pip install -e . --no-deps
-      - name: Install independent FastF1 comparison provider
+      - name: Install FastF1 comparison provider
         run: python -m pip install 'fastf1>=3.6,<4'
-      - name: Reconcile completed race across Jolpica, OpenF1 and FastF1
+      - name: Audit completed race across Jolpica, OpenF1 and FastF1
         run: |
-          python -m f1_research.provider_reconciliation \
+          python -m f1_research.provider_audit \
             --year '${{ inputs.year }}' \
             --round '${{ inputs.round }}' \
             --openf1-session-key '${{ inputs.openf1_session_key }}' \
@@ -49,5 +49,5 @@ jobs:
         with:
           name: provider-reconciliation-${{ inputs.year }}-R${{ inputs.round }}
           path: reports/reconciliation
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
