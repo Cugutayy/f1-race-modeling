@@ -14,9 +14,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from .data_truth import assert_trusted_live_state, audit_payload
 from .live_intelligence import combined_live_report, combined_pit_windows, load_strict_artifact
 from .reliability import reliability_overrides_from_state
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
@@ -31,6 +33,7 @@ MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
 MAX_TELEMETRY_TAIL_BYTES = 4 * 1024 * 1024
+DEFAULT_MAX_LIVE_AGE_S = 20.0
 
 app = FastAPI(title="F1 Race Intelligence API", version="1.0.0", docs_url="/docs")
 
@@ -65,6 +68,22 @@ def _priors_path() -> Path:
 
 def _evidence_path() -> Path:
     return _path("F1_MODEL_EVIDENCE_PATH", DEFAULT_EVIDENCE)
+
+
+def _max_live_age_s() -> float:
+    raw = os.environ.get("F1_MAX_LIVE_AGE_S", str(DEFAULT_MAX_LIVE_AGE_S))
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError("F1_MAX_LIVE_AGE_S must be numeric") from exc
+    if not np.isfinite(value) or not 1.0 <= value <= 300.0:
+        raise RuntimeError("F1_MAX_LIVE_AGE_S must be between 1 and 300 seconds")
+    return value
+
+
+def _require_live_stream() -> bool:
+    raw = os.environ.get("F1_REQUIRE_LIVE_STREAM", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _authorize(authorization: str | None = Header(default=None)) -> None:
@@ -140,6 +159,37 @@ def _age_s(raw: Any) -> float | None:
 
 def _state_age_s(state: dict[str, Any]) -> float | None:
     return _age_s(state.get("updated_at"))
+
+
+def _trusted_live_audit(state: dict[str, Any]) -> dict[str, Any]:
+    max_age = _max_live_age_s()
+    try:
+        state_audit = assert_trusted_live_state(state, max_age_s=max_age)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    manifest = _read_capture_manifest()
+    stream = manifest.get("stream") if isinstance(manifest.get("stream"), dict) else {}
+    connection_state = stream.get("connection_state")
+    last_message_age = _age_s(stream.get("last_message_at"))
+    if _require_live_stream():
+        if connection_state != "connected":
+            raise HTTPException(
+                status_code=503,
+                detail=f"Live provider stream is not connected: {connection_state or 'unknown'}",
+            )
+        if last_message_age is None or last_message_age > max_age:
+            raise HTTPException(
+                status_code=503,
+                detail="Live provider stream has no fresh messages",
+            )
+
+    return {
+        **audit_payload(state_audit),
+        "transport_required": _require_live_stream(),
+        "connection_state": connection_state,
+        "last_message_age_s": last_message_age,
+    }
 
 
 def _load_artifact() -> dict[str, Any] | None:
@@ -232,6 +282,7 @@ def _telemetry(driver_number: int, limit: int) -> list[dict[str, Any]]:
 
 def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     state = _read_state()
+    truth_audit = _trusted_live_audit(state)
     config, prior_audit = _simulation_config(samples)
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(state, reliability_model)
@@ -273,6 +324,7 @@ def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     report["state"] = state
     report["state_age_s"] = _state_age_s(state)
+    report["data_truth"] = truth_audit
     report["strategy_prior_source"] = prior_audit
     report["pace_status"] = pace_status
     return _safe(report)
@@ -292,12 +344,21 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
     live_stream_healthy = bool(
         connection_state == "connected"
         and last_message_age_s is not None
-        and last_message_age_s <= 15.0
+        and last_message_age_s <= _max_live_age_s()
     )
+    trusted_live_ready = False
+    trusted_live_error = None
+    if state_path.exists():
+        try:
+            _trusted_live_audit(state)
+            trusted_live_ready = True
+        except HTTPException as exc:
+            trusted_live_error = str(exc.detail)
     return JSONResponse(_safe({
         "ok": state_path.exists(),
         "state_path": str(state_path),
         "state_age_s": _state_age_s(state),
+        "provider_event_age_s": _age_s(state.get("latest_provider_event_at")),
         "strict_model": model_path.exists(),
         "strategy_priors": priors_path.exists(),
         "model_evidence": evidence_path.exists(),
@@ -305,10 +366,14 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
         "current_lap": state.get("current_lap"),
         "rejected_stale_messages": state.get("rejected_stale_messages", 0),
         "rejected_provider_order_messages": state.get("rejected_provider_order_messages", 0),
+        "rejected_invalid_timestamp_messages": state.get("rejected_invalid_timestamp_messages", 0),
         "capture_rows": manifest.get("captured_rows"),
         "capture_bytes": manifest.get("capture_bytes"),
         "connection_state": connection_state,
         "live_stream_healthy": live_stream_healthy,
+        "trusted_live_ready": trusted_live_ready,
+        "trusted_live_error": trusted_live_error,
+        "max_live_age_s": _max_live_age_s(),
         "last_message_age_s": last_message_age_s,
         "connect_count": stream.get("connect_count"),
         "disconnect_count": stream.get("disconnect_count"),
@@ -350,6 +415,7 @@ def strategy(
     _: None = Depends(_authorize),
 ) -> JSONResponse:
     state = _read_state()
+    truth_audit = _trusted_live_audit(state)
     config, prior_audit = _simulation_config(samples)
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(state, reliability_model)
@@ -381,6 +447,7 @@ def strategy(
         "session_key": state.get("session_key"),
         "state_updated_at": state.get("updated_at"),
         "state_age_s": _state_age_s(state),
+        "data_truth": truth_audit,
         "pace_status": pace_status,
         "reliability_status": (
             "hierarchical_public_results_survival"
