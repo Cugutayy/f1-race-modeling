@@ -1,0 +1,134 @@
+name: Temporary status semantics v4 patch
+
+on:
+  push:
+    branches:
+      - audit/status-semantics-v4
+    paths:
+      - .github/workflows/status-semantics-v4-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/status-semantics-v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Split provider status labels from classification and start evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/f1_research/provider_reconciliation.py')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, found {count}: {old[:100]!r}')
+              text = text.replace(old, new)
+
+          replace_once(
+              '''HARD_FIELDS = ("position", "laps", "status_class")\nSECONDARY_FIELDS = ("grid_position", "pit_stops", "points")\nPOSITION_REQUIRED_STATUSES = {"finished", "classified_lapped"}\nPOSITION_OPTIONAL_STATUSES = {"dnf", "dns", "dsq"}\n''',
+              '''HARD_FIELDS = ("position", "laps", "classification_status", "start_status")\nSECONDARY_FIELDS = ("grid_position", "pit_stops", "points")\nPOSITION_REQUIRED_CLASSIFICATIONS = {"classified"}\n''',
+          )
+          replace_once(
+              '''    "status_class": (\n        "Conservative normalized class: finished, classified_lapped, dnf, dns or dsq. "\n        "Raw provider status is retained for audit."\n    ),\n''',
+              '''    "status_class": (\n        "Provider-facing normalized label: finished, classified_lapped, dnf, dns or dsq. "\n        "It is retained as audit evidence but is not itself a cross-provider hard truth because "\n        "providers may encode start participation and final classification differently."\n    ),\n    "classification_status": (\n        "Cross-provider final-classification outcome: classified, not_classified or disqualified. "\n        "Jolpica positionText, FastF1 ClassifiedPosition, and OpenF1 final position/flags are "\n        "used so DNF versus DNS wording alone cannot create a false hard mismatch."\n    ),\n    "start_status": (\n        "Start participation: started or dns only when explicit DNS evidence or completed-lap/"\n        "finish evidence proves it. A zero-lap DNF/Retired row without an explicit DNS flag "\n        "remains UNKNOWN rather than being guessed as started."\n    ),\n''',
+          )
+          replace_once(
+              '''    status_class: str | None\n    grid_position: int | None = None\n''',
+              '''    status_class: str | None\n    classification_status: str | None = None\n    start_status: str | None = None\n    grid_position: int | None = None\n''',
+          )
+          replace_once(
+              '''def _openf1_status(row: dict[str, Any]) -> str | None:\n    dsq = _optional_bool(row.get("dsq"), field="openf1.dsq")\n    dns = _optional_bool(row.get("dns"), field="openf1.dns")\n    dnf = _optional_bool(row.get("dnf"), field="openf1.dnf")\n    if dsq:\n        return "dsq"\n    if dns:\n        return "dns"\n    if dnf:\n        return "dnf"\n    gap = (_clean_text(row.get("gap_to_leader")) or "").upper()\n    if "LAP" in gap:\n        return "classified_lapped"\n    if _positive_int(row.get("position")) is not None:\n        return "finished"\n    return None\n\n\n''',
+              '''def _openf1_status(row: dict[str, Any]) -> str | None:\n    dsq = _optional_bool(row.get("dsq"), field="openf1.dsq")\n    dns = _optional_bool(row.get("dns"), field="openf1.dns")\n    dnf = _optional_bool(row.get("dnf"), field="openf1.dnf")\n    if dsq:\n        return "dsq"\n    if dns:\n        return "dns"\n    if dnf:\n        return "dnf"\n    gap = (_clean_text(row.get("gap_to_leader")) or "").upper()\n    if "LAP" in gap:\n        return "classified_lapped"\n    if _positive_int(row.get("position")) is not None:\n        return "finished"\n    return None\n\n\ndef _classification_status_from_marker(\n    status_class: str | None,\n    classified_position: Any,\n) -> str | None:\n    """Separate final classification from provider-specific DNF/DNS wording."""\n    marker = (_clean_text(classified_position) or "").upper()\n    if status_class == "dsq" or marker in {"D", "DSQ", "E"}:\n        return "disqualified"\n    if status_class == "dns":\n        return "not_classified"\n    if _positive_int(classified_position) is not None:\n        return "classified"\n    if marker in {"R", "NC", "N", "W", "WD"}:\n        return "not_classified"\n    if status_class in {"finished", "classified_lapped"}:\n        return "classified"\n    if status_class == "dnf":\n        return "not_classified"\n    return None\n\n\ndef _start_status_from_evidence(\n    status_class: str | None,\n    laps: int | None,\n    *,\n    explicit_dns: bool | None = None,\n) -> str | None:\n    """Infer start participation only from evidence that actually proves it."""\n    if explicit_dns is True:\n        return "dns"\n    if explicit_dns is False:\n        return "started"\n    if status_class == "dns":\n        return "dns"\n    if laps is not None and laps > 0:\n        return "started"\n    if status_class in {"finished", "classified_lapped"}:\n        return "started"\n    return None\n\n\ndef _effective_classification_status(row: ResultRow) -> str | None:\n    if row.classification_status is not None:\n        return row.classification_status\n    # Backward-compatible fallback for hand-built ResultRow fixtures. Do not use row.position\n    # as a classification marker here: the normalized position field can contain ordinal output\n    # even for providers that separately mark a driver as not classified.\n    return _classification_status_from_marker(row.status_class, None)\n\n\ndef _effective_start_status(row: ResultRow) -> str | None:\n    if row.start_status is not None:\n        return row.start_status\n    return _start_status_from_evidence(row.status_class, row.laps)\n\n\n''',
+          )
+          replace_once(
+              '''        driver_id = _clean_text(driver.get("driverId"))\n        rows.append(ResultRow(\n            provider="Jolpica",\n            driver_number=number,\n            position=_positive_int(raw.get("position")),\n            laps=_positive_int(raw.get("laps"), allow_zero=True),\n            status_class=_status_from_text(raw.get("status"), raw.get("positionText")),\n''',
+              '''        driver_id = _clean_text(driver.get("driverId"))\n        laps = _positive_int(raw.get("laps"), allow_zero=True)\n        status_class = _status_from_text(raw.get("status"), raw.get("positionText"))\n        classification_status = _classification_status_from_marker(\n            status_class, raw.get("positionText")\n        )\n        start_status = _start_status_from_evidence(status_class, laps)\n        rows.append(ResultRow(\n            provider="Jolpica",\n            driver_number=number,\n            position=_positive_int(raw.get("position")),\n            laps=laps,\n            status_class=status_class,\n            classification_status=classification_status,\n            start_status=start_status,\n''',
+          )
+          replace_once(
+              '''        driver = lookup.get(number, {})\n        status_class = _openf1_status(raw)\n        rows.append(ResultRow(\n            provider="OpenF1",\n            driver_number=number,\n            position=_positive_int(raw.get("position")),\n            laps=_positive_int(raw.get("number_of_laps"), allow_zero=True),\n            status_class=status_class,\n''',
+              '''        driver = lookup.get(number, {})\n        laps = _positive_int(raw.get("number_of_laps"), allow_zero=True)\n        status_class = _openf1_status(raw)\n        classification_status = _classification_status_from_marker(\n            status_class, raw.get("position")\n        )\n        dns_evidence = _optional_bool(raw.get("dns"), field="openf1.dns")\n        start_status = _start_status_from_evidence(\n            status_class, laps, explicit_dns=dns_evidence\n        )\n        rows.append(ResultRow(\n            provider="OpenF1",\n            driver_number=number,\n            position=_positive_int(raw.get("position")),\n            laps=laps,\n            status_class=status_class,\n            classification_status=classification_status,\n            start_status=start_status,\n''',
+          )
+          replace_once(
+              '''        if result_laps is None and status_class == "dns":\n            result_laps = 0\n\n        code = _clean_text(raw.get("Abbreviation")) or _clean_text(raw.get("Driver"))\n''',
+              '''        if result_laps is None and status_class == "dns":\n            result_laps = 0\n        classification_status = _classification_status_from_marker(\n            status_class, raw.get("ClassifiedPosition")\n        )\n        start_status = _start_status_from_evidence(status_class, result_laps)\n\n        code = _clean_text(raw.get("Abbreviation")) or _clean_text(raw.get("Driver"))\n''',
+          )
+          replace_once(
+              '''            laps=result_laps,\n            status_class=status_class,\n            grid_position=_positive_int(raw.get("GridPosition"), allow_zero=True),\n''',
+              '''            laps=result_laps,\n            status_class=status_class,\n            classification_status=classification_status,\n            start_status=start_status,\n            grid_position=_positive_int(raw.get("GridPosition"), allow_zero=True),\n''',
+          )
+          replace_once(
+              '''def _position_required(row: ResultRow) -> bool:\n    return row.status_class in POSITION_REQUIRED_STATUSES\n''',
+              '''def _position_required(row: ResultRow) -> bool:\n    return _effective_classification_status(row) in POSITION_REQUIRED_CLASSIFICATIONS\n''',
+          )
+          replace_once(
+              '''        if row.status_class is None:\n            failures.append(Mismatch(\n                provider,\n                provider,\n                row.driver_number,\n                "status_class",\n                None,\n                None,\n                "hard",\n                "provider is missing normalized classification status",\n            ))\n''',
+              '''        classification_status = _effective_classification_status(row)\n        if classification_status is None:\n            failures.append(Mismatch(\n                provider,\n                provider,\n                row.driver_number,\n                "classification_status",\n                None,\n                None,\n                "hard",\n                "provider is missing normalized final-classification evidence",\n            ))\n        start_status = _effective_start_status(row)\n        if start_status is None:\n            insufficient.append({\n                "provider": provider,\n                "driver_number": row.driver_number,\n                "field": "start_status",\n                "status_class": row.status_class,\n                "reason": (\n                    "provider evidence does not prove whether this zero-lap non-finisher "\n                    "started the race"\n                ),\n            })\n''',
+          )
+          replace_once(
+              '''                for field in ("laps", "status_class"):\n                    value_a, value_b = getattr(a, field), getattr(b, field)\n                    if value_a != value_b:\n                        mismatches.append(Mismatch(\n                            provider_a,\n                            provider_b,\n                            number,\n                            field,\n                            value_a,\n                            value_b,\n                            "hard",\n                            "provider values disagree",\n                        ))\n\n                for field in SECONDARY_FIELDS:\n''',
+              '''                if a.laps != b.laps:\n                    mismatches.append(Mismatch(\n                        provider_a,\n                        provider_b,\n                        number,\n                        "laps",\n                        a.laps,\n                        b.laps,\n                        "hard",\n                        "provider values disagree",\n                    ))\n\n                classification_a = _effective_classification_status(a)\n                classification_b = _effective_classification_status(b)\n                if classification_a != classification_b:\n                    mismatches.append(Mismatch(\n                        provider_a,\n                        provider_b,\n                        number,\n                        "classification_status",\n                        classification_a,\n                        classification_b,\n                        "hard",\n                        "provider final-classification outcomes disagree",\n                    ))\n\n                start_a = _effective_start_status(a)\n                start_b = _effective_start_status(b)\n                if start_a is None or start_b is None:\n                    insufficient_hard.append({\n                        "provider_a": provider_a,\n                        "provider_b": provider_b,\n                        "driver_number": number,\n                        "field": "start_status",\n                        "value_a": start_a,\n                        "value_b": start_b,\n                        "status_a": a.status_class,\n                        "status_b": b.status_class,\n                        "reason": (\n                            "at least one provider does not expose enough evidence to prove "\n                            "race-start participation"\n                        ),\n                    })\n                elif start_a != start_b:\n                    mismatches.append(Mismatch(\n                        provider_a,\n                        provider_b,\n                        number,\n                        "start_status",\n                        start_a,\n                        start_b,\n                        "hard",\n                        "provider start-participation evidence disagrees",\n                    ))\n\n                if a.status_class != b.status_class:\n                    mismatches.append(Mismatch(\n                        provider_a,\n                        provider_b,\n                        number,\n                        "status_class",\n                        a.status_class,\n                        b.status_class,\n                        "warning",\n                        (\n                            "provider status labels differ; final classification and start "\n                            "participation are reconciled in separate semantic fields"\n                        ),\n                    ))\n\n                for field in SECONDARY_FIELDS:\n''',
+          )
+          replace_once('''        "schema_version": 3,\n''', '''        "schema_version": 4,\n''')
+          replace_once(
+              '''            "repair_disagreements": False,\n            "majority_vote": False,\n''',
+              '''            "repair_disagreements": False,\n            "majority_vote": False,\n            "provider_status_label_is_hard_truth": False,\n''',
+          )
+
+          path.write_text(text, encoding='utf-8')
+
+          Path('tests/test_provider_status_semantics.py').write_text('''\nimport pandas as pd\n\nfrom f1_research.provider_reconciliation import (\n    normalize_fastf1_results,\n    normalize_jolpica_results,\n    normalize_openf1_results,\n    reconcile_results,\n)\n\n\ndef _jolpica_hadjar_case():\n    return {\n        "MRData": {\n            "RaceTable": {\n                "Races": [{\n                    "season": "2025",\n                    "round": "1",\n                    "raceName": "Australian Grand Prix",\n                    "date": "2025-03-16",\n                    "Circuit": {"circuitId": "albert_park"},\n                    "Results": [\n                        {\n                            "number": "4", "position": "1", "positionText": "1",\n                            "grid": "1", "laps": "57", "points": "25",\n                            "status": "Finished",\n                            "Driver": {"driverId": "norris", "code": "NOR"},\n                            "Constructor": {"constructorId": "mclaren"},\n                        },\n                        {\n                            "number": "6", "position": "20", "positionText": "R",\n                            "grid": "11", "laps": "0", "points": "0",\n                            "status": "Retired",\n                            "Driver": {"driverId": "hadjar", "code": "HAD"},\n                            "Constructor": {"constructorId": "rb"},\n                        },\n                    ],\n                }]\n            }\n        }\n    }\n\n\ndef _openf1_hadjar_case():\n    return [\n        {\n            "driver_number": 4, "position": 1, "number_of_laps": 57,\n            "points": 25.0, "dnf": False, "dns": False, "dsq": False,\n            "gap_to_leader": 0,\n        },\n        {\n            "driver_number": 6, "position": None, "number_of_laps": 0,\n            "points": 0.0, "dnf": False, "dns": True, "dsq": False,\n            "gap_to_leader": None,\n        },\n    ]\n\n\ndef _fastf1_hadjar_case():\n    return pd.DataFrame([\n        {\n            "DriverNumber": "4", "Position": 1.0, "ClassifiedPosition": "1",\n            "GridPosition": 1.0, "Laps": 57.0, "Points": 25.0,\n            "Status": "Finished", "Abbreviation": "NOR",\n        },\n        {\n            "DriverNumber": "6", "Position": 20.0, "ClassifiedPosition": "R",\n            "GridPosition": 11.0, "Laps": 0.0, "Points": 0.0,\n            "Status": "Retired", "Abbreviation": "HAD",\n        },\n    ])\n\n\ndef test_dns_and_dnf_labels_do_not_conflict_when_final_classification_agrees():\n    jolpica, _ = normalize_jolpica_results(_jolpica_hadjar_case())\n    openf1 = normalize_openf1_results(_openf1_hadjar_case())\n    fastf1 = normalize_fastf1_results(_fastf1_hadjar_case(), None)\n\n    by_provider = {\n        "Jolpica": {row.driver_number: row for row in jolpica},\n        "OpenF1": {row.driver_number: row for row in openf1},\n        "FastF1": {row.driver_number: row for row in fastf1},\n    }\n    assert by_provider["Jolpica"][6].status_class == "dnf"\n    assert by_provider["FastF1"][6].status_class == "dnf"\n    assert by_provider["OpenF1"][6].status_class == "dns"\n    assert {rows[6].classification_status for rows in by_provider.values()} == {"not_classified"}\n    assert by_provider["Jolpica"][6].start_status is None\n    assert by_provider["FastF1"][6].start_status is None\n    assert by_provider["OpenF1"][6].start_status == "dns"\n\n    report = reconcile_results({"Jolpica": jolpica, "OpenF1": openf1, "FastF1": fastf1})\n    assert report["passed"] is True\n    assert report["verification_status"] == "PASS_WITH_GAPS"\n    assert report["hard_mismatch_count"] == 0\n    status_warnings = [m for m in report["mismatches"] if m["field"] == "status_class"]\n    assert len(status_warnings) == 2\n    assert all(m["severity"] == "warning" for m in status_warnings)\n    assert any(\n        gap["field"] == "start_status" and gap["driver_number"] == 6\n        for gap in report["insufficient_hard_evidence"]\n    )\n\n\ndef test_true_final_classification_disagreement_remains_hard():\n    jolpica, _ = normalize_jolpica_results(_jolpica_hadjar_case())\n    openf1_rows = _openf1_hadjar_case()\n    openf1_rows[1] = {\n        **openf1_rows[1],\n        "position": 2,\n        "dns": False,\n        "dnf": False,\n        "number_of_laps": 57,\n        "gap_to_leader": 5.0,\n    }\n    openf1 = normalize_openf1_results(openf1_rows)\n    report = reconcile_results({"Jolpica": jolpica, "OpenF1": openf1})\n    assert report["passed"] is False\n    assert any(\n        m["field"] == "classification_status" and m["severity"] == "hard"\n        for m in report["mismatches"]\n    )\n\n\ndef test_zero_lap_retired_does_not_invent_a_start_but_positive_laps_prove_it():\n    fastf1 = _fastf1_hadjar_case()\n    rows = normalize_fastf1_results(fastf1, None)\n    by_number = {row.driver_number: row for row in rows}\n    assert by_number[6].start_status is None\n    assert by_number[4].start_status == "started"\n\n\ndef test_openf1_explicit_dns_false_proves_started_even_with_zero_completed_laps():\n    rows = normalize_openf1_results([\n        {\n            "driver_number": 7, "position": None, "number_of_laps": 0,\n            "dnf": True, "dns": False, "dsq": False, "gap_to_leader": None,\n        },\n        {\n            "driver_number": 6, "position": None, "number_of_laps": 0,\n            "dnf": False, "dns": True, "dsq": False, "gap_to_leader": None,\n        },\n    ])\n    by_number = {row.driver_number: row for row in rows}\n    assert by_number[7].start_status == "started"\n    assert by_number[6].start_status == "dns"\n'''.lstrip(), encoding='utf-8')
+          PY
+      - name: Install project dependencies
+        run: python -m pip install -r requirements-lock.txt && python -m pip install -e . --no-deps
+      - name: Lint and targeted reconciliation tests
+        run: |
+          ruff check src/f1_research/provider_reconciliation.py tests/test_provider_status_semantics.py tests/test_provider_reconciliation.py tests/test_provider_reconciliation_semantics.py tests/test_provider_reconciliation_position_semantics.py tests/test_provider_audit.py tests/test_provider_audit_semantics_v2.py
+          pytest -q tests/test_provider_status_semantics.py tests/test_provider_reconciliation.py tests/test_provider_reconciliation_semantics.py tests/test_provider_reconciliation_position_semantics.py tests/test_provider_audit.py tests/test_provider_audit_semantics_v2.py
+      - name: Real 2025 Australia reconciliation smoke
+        run: |
+          rm -rf reports/status-semantics-australia data/status-semantics-cache
+          python -m f1_research.provider_audit \
+            --year 2025 \
+            --round 1 \
+            --openf1-session-key 9693 \
+            --cache data/status-semantics-cache \
+            --output reports/status-semantics-australia
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('reports/status-semantics-australia/reconciliation.json').read_text())
+          assert report['passed'] is True, report
+          assert report['verification_status'] == 'PASS_WITH_GAPS', report['verification_status']
+          assert report['hard_mismatch_count'] == 0, report['mismatches']
+          status_warnings = [m for m in report['mismatches'] if m['field'] == 'status_class']
+          assert len(status_warnings) == 2, status_warnings
+          hadjar = [m for m in status_warnings if m['driver_number'] == 6]
+          assert len(hadjar) == 2, hadjar
+          assert any(g['field'] == 'start_status' and g['driver_number'] == 6 for g in report['insufficient_hard_evidence'])
+          print({
+              'verification_status': report['verification_status'],
+              'hard_mismatch_count': report['hard_mismatch_count'],
+              'warning_count': report['warning_count'],
+              'insufficient_hard_count': report['insufficient_hard_count'],
+              'hadjar_status_warnings': hadjar,
+          })
+          PY
+      - name: Commit verified source and tests
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/f1_research/provider_reconciliation.py tests/test_provider_status_semantics.py
+          git commit -m "Split classification outcome from race start status" || exit 0
+          git push origin HEAD:audit/status-semantics-v4
