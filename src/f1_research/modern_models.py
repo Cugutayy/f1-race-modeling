@@ -3,6 +3,13 @@
 Optional libraries are lazy imports. A model only earns a place in reports when it
 beats baselines on held-out F1 events; availability or benchmark hype is not treated
 as evidence of F1 performance.
+
+Hyperparameter selection uses walk-forward predictions from the designated tuning
+block. Because the product exposes race probabilities, winner log loss is the default
+selection metric; rank MAE is retained as a transparent secondary metric. A single
+scalar temperature is optimized on the tuning predictions for candidate selection,
+then discarded. Final probability calibration is repeated independently on the later
+outer calibration block in ``evaluation_v2``.
 """
 
 from __future__ import annotations
@@ -21,6 +28,9 @@ from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
 from .features import CATEGORICAL, FEATURES, NUMERIC
 
+TUNING_TEMPERATURES = np.geomspace(0.02, 3.0, 45)
+SELECTION_METRICS = {"winner_log_loss", "position_mae"}
+
 
 @dataclass(frozen=True)
 class CandidateSpec:
@@ -32,7 +42,9 @@ class CandidateSpec:
 class CandidateScore:
     name: str
     params: dict[str, Any]
+    mean_winner_log_loss: float
     mean_position_mae: float
+    tuning_temperature: float
     events: int
     available: bool = True
     error: str | None = None
@@ -174,15 +186,60 @@ def _rank_mae(event: pd.DataFrame, scores: np.ndarray) -> float:
     return float(np.mean(np.abs(ranks - truth)))
 
 
-def tune_forward_events(frame: pd.DataFrame, specs: list[CandidateSpec] | None = None,
-                        tuning_events: int = 6, min_fit_events: int = 12,
-                        max_specs_per_model: int | None = None) -> tuple[CandidateSpec, pd.DataFrame]:
-    """Select hyperparameters only from past whole events.
+def _winner_log_loss(event: pd.DataFrame, scores: np.ndarray, temperature: float) -> float:
+    scores = np.asarray(scores, dtype=float)
+    if len(scores) != len(event) or not np.isfinite(scores).all():
+        raise ValueError("Model produced invalid probability scores")
+    if not np.isfinite(temperature) or temperature <= 0:
+        raise ValueError("temperature must be positive and finite")
+    winner = event["finish_position"].to_numpy(dtype=float) == 1
+    if winner.sum() != 1:
+        raise ValueError("Tuning event must contain exactly one winner")
+    logits = -scores / temperature
+    logits -= np.max(logits)
+    weights = np.exp(logits)
+    probabilities = weights / weights.sum()
+    return float(-np.log(max(float(probabilities[winner][0]), 1e-15)))
 
-    For each tuning event the estimator is refit using only strictly earlier rows.
-    The returned winner must still be probability-calibrated on a later disjoint
-    block before it can be evaluated on an outer test event.
+
+def _select_tuning_temperature(
+    predictions: list[tuple[pd.DataFrame, np.ndarray]],
+    temperatures: np.ndarray = TUNING_TEMPERATURES,
+) -> tuple[float, float]:
+    if not predictions:
+        raise ValueError("No tuning predictions available for temperature selection")
+    losses = []
+    for temperature in temperatures:
+        event_losses = [
+            _winner_log_loss(event, scores, float(temperature))
+            for event, scores in predictions
+        ]
+        losses.append(float(np.mean(event_losses)))
+    best_index = int(np.argmin(losses))
+    return float(temperatures[best_index]), float(losses[best_index])
+
+
+def tune_forward_events(
+    frame: pd.DataFrame,
+    specs: list[CandidateSpec] | None = None,
+    tuning_events: int = 6,
+    min_fit_events: int = 12,
+    max_specs_per_model: int | None = None,
+    selection_metric: str = "winner_log_loss",
+) -> tuple[CandidateSpec, pd.DataFrame]:
+    """Select hyperparameters only from the designated past tuning block.
+
+    Each tuning event is predicted by a model fit strictly before that event. Candidate
+    temperature and candidate ranking are both selected using only these tuning-block
+    predictions. The resulting temperature is *not* reused for the final model; the
+    later outer calibration block independently calibrates the selected candidate.
+
+    The tuning log loss is a model-selection score, not an unbiased generalization
+    estimate, because the scalar temperature is optimized on the same tuning block.
+    The sealed outer test remains untouched and is the evidence-bearing evaluation.
     """
+    if selection_metric not in SELECTION_METRICS:
+        raise ValueError(f"Unknown selection metric: {selection_metric}")
     required = set(FEATURES) | {"event_id", "date", "finish_position", "driver"}
     if required - set(frame):
         raise ValueError(f"Missing tuning columns: {sorted(required - set(frame))}")
@@ -203,10 +260,19 @@ def tune_forward_events(frame: pd.DataFrame, specs: list[CandidateSpec] | None =
     scores: list[CandidateScore] = []
     for spec in specs:
         if not availability.get(spec.name, False):
-            scores.append(CandidateScore(spec.name, spec.params, np.inf, 0, False,
-                                         "optional dependency is not installed"))
+            scores.append(CandidateScore(
+                spec.name,
+                spec.params,
+                np.inf,
+                np.inf,
+                np.nan,
+                0,
+                False,
+                "optional dependency is not installed",
+            ))
             continue
-        event_losses = []
+        event_predictions: list[tuple[pd.DataFrame, np.ndarray]] = []
+        event_rank_losses: list[float] = []
         try:
             for event_id in tune_ids:
                 target_event = frame[frame.event_id == event_id]
@@ -216,22 +282,55 @@ def tune_forward_events(frame: pd.DataFrame, specs: list[CandidateSpec] | None =
                     continue
                 model = build_estimator(spec)
                 model.fit(train[FEATURES], normalized_rank_target(train))
-                event_losses.append(_rank_mae(target_event, model.predict(target_event[FEATURES])))
-            if not event_losses:
+                predicted_scores = np.asarray(model.predict(target_event[FEATURES]), dtype=float)
+                event_rank_losses.append(_rank_mae(target_event, predicted_scores))
+                event_predictions.append((target_event, predicted_scores))
+            if not event_predictions:
                 raise ValueError("candidate had no eligible tuning events")
-            scores.append(CandidateScore(spec.name, spec.params, float(np.mean(event_losses)),
-                                         len(event_losses)))
+            temperature, winner_loss = _select_tuning_temperature(event_predictions)
+            scores.append(CandidateScore(
+                spec.name,
+                spec.params,
+                winner_loss,
+                float(np.mean(event_rank_losses)),
+                temperature,
+                len(event_predictions),
+            ))
         except (ValueError, RuntimeError, MemoryError) as exc:
-            scores.append(CandidateScore(spec.name, spec.params, np.inf, len(event_losses), True, str(exc)))
+            scores.append(CandidateScore(
+                spec.name,
+                spec.params,
+                np.inf,
+                float(np.mean(event_rank_losses)) if event_rank_losses else np.inf,
+                np.nan,
+                len(event_predictions),
+                True,
+                str(exc),
+            ))
 
-    valid = [item for item in scores if np.isfinite(item.mean_position_mae)]
+    valid = [
+        item for item in scores
+        if np.isfinite(item.mean_position_mae) and np.isfinite(item.mean_winner_log_loss)
+    ]
     if not valid:
         raise ValueError("No modern candidate completed forward-event tuning")
-    best_score = min(valid, key=lambda item: (item.mean_position_mae, item.name))
+    if selection_metric == "winner_log_loss":
+        best_score = min(
+            valid,
+            key=lambda item: (item.mean_winner_log_loss, item.mean_position_mae, item.name),
+        )
+        sort_columns = ["mean_winner_log_loss", "mean_position_mae", "name"]
+    else:
+        best_score = min(
+            valid,
+            key=lambda item: (item.mean_position_mae, item.mean_winner_log_loss, item.name),
+        )
+        sort_columns = ["mean_position_mae", "mean_winner_log_loss", "name"]
     best = CandidateSpec(best_score.name, best_score.params)
     table = pd.DataFrame([
         {**asdict(item), "params": jsonable_params(item.params)} for item in scores
-    ]).sort_values(["mean_position_mae", "name"], na_position="last").reset_index(drop=True)
+    ]).sort_values(sort_columns, na_position="last").reset_index(drop=True)
+    table.attrs["selection_metric"] = selection_metric
     return best, table
 
 
