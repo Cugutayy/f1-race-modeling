@@ -33,6 +33,16 @@ def render_markdown(matrix: dict[str, Any]) -> str:
             f"{row['insufficient_hard_count']} | {row['insufficient_secondary_count']} | "
             f"{'yes' if row['reconciliation_performed'] else 'no'} | `{row['source_sha256']}` |"
         )
+    failed = [row for row in events if row["verification_status"] == "FAIL"]
+    if failed:
+        lines += ["", "## Failure evidence", ""]
+        for row in failed:
+            provider_keys = ", ".join(row.get("provider_error_keys") or []) or "none"
+            identity = "; ".join(row.get("event_identity_failures") or []) or "none"
+            lines.append(
+                f"- {row['year']} R{row['round_number']}: provider errors={provider_keys}; "
+                f"event identity failures={identity}"
+            )
     lines += [
         "",
         "## Evidence policy",
