@@ -17,6 +17,16 @@ def _provenance(path: Path) -> dict:
         "provider": "user-supplied CSV; source provenance not verified"}
 
 
+def _simulation_config(priors: Path | None, samples: int):
+    if priors is None:
+        from .strategy import SimulationConfig
+
+        return SimulationConfig(samples=samples), {"source": "built_in_defaults"}
+    from .strategy_calibration import load_simulation_config
+
+    return load_simulation_config(priors, samples=samples)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="F1 event-cutoff and live race research")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -60,6 +70,7 @@ def main(argv=None):
     live.add_argument("--total-laps", type=int, required=True)
     live.add_argument("--output", type=Path, required=True)
     live.add_argument("--samples", type=int, default=20_000)
+    live.add_argument("--priors", type=Path, help="Optional calibrated strategy_priors.json")
 
     pit = commands.add_parser("pit-window", help="Compare counterfactual pit windows for one live driver")
     pit.add_argument("--state", type=Path, required=True)
@@ -67,6 +78,7 @@ def main(argv=None):
     pit.add_argument("--driver-number", type=int, required=True)
     pit.add_argument("--output", type=Path, required=True)
     pit.add_argument("--samples", type=int, default=20_000)
+    pit.add_argument("--priors", type=Path, help="Optional calibrated strategy_priors.json")
 
     args = parser.parse_args(argv)
     if args.command == "demo":
@@ -108,21 +120,26 @@ def main(argv=None):
                                          indent=2, allow_nan=False), encoding="utf-8")
         print(f"Predictions -> {args.output}")
     elif args.command == "live-predict":
-        from .strategy import SimulationConfig, predict_from_state
+        from .strategy import predict_from_state
 
         state = json.loads(args.state.read_text(encoding="utf-8"))
-        result = predict_from_state(state, args.total_laps, config=SimulationConfig(samples=args.samples))
+        config, prior_audit = _simulation_config(args.priors, args.samples)
+        result = predict_from_state(state, args.total_laps, config=config)
+        result["strategy_prior_source"] = prior_audit
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
         print(f"Live simulation -> {args.output}")
     else:
-        from .strategy import SimulationConfig, compare_pit_windows
+        from .strategy import compare_pit_windows
 
         state = json.loads(args.state.read_text(encoding="utf-8"))
-        result = compare_pit_windows(state, args.total_laps, args.driver_number,
-                                     config=SimulationConfig(samples=args.samples))
+        config, prior_audit = _simulation_config(args.priors, args.samples)
+        result = compare_pit_windows(state, args.total_laps, args.driver_number, config=config)
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
+        args.output.write_text(json.dumps({
+            "strategy_prior_source": prior_audit,
+            "scenarios": result,
+        }, indent=2, allow_nan=False), encoding="utf-8")
         print(f"Pit-window scenarios -> {args.output}")
 
 
