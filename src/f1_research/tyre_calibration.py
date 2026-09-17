@@ -21,10 +21,28 @@ import numpy as np
 import pandas as pd
 
 DRY_COMPOUNDS = ("SOFT", "MEDIUM", "HARD")
-DEFAULT_PACE_DELTA = {"SOFT": -0.35, "MEDIUM": 0.0, "HARD": 0.35,
-                      "INTERMEDIATE": 2.5, "WET": 5.0}
-DEFAULT_PIT_AGE = {"SOFT": 18.0, "MEDIUM": 28.0, "HARD": 40.0,
-                   "INTERMEDIATE": 25.0, "WET": 30.0}
+ALL_COMPOUNDS = ("SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET")
+DEFAULT_PACE_DELTA = {
+    "SOFT": -0.35,
+    "MEDIUM": 0.0,
+    "HARD": 0.35,
+    "INTERMEDIATE": 2.5,
+    "WET": 5.0,
+}
+DEFAULT_DEGRADATION = {
+    "SOFT": 0.08,
+    "MEDIUM": 0.06,
+    "HARD": 0.04,
+    "INTERMEDIATE": 0.06,
+    "WET": 0.05,
+}
+DEFAULT_PIT_AGE = {
+    "SOFT": 18.0,
+    "MEDIUM": 28.0,
+    "HARD": 40.0,
+    "INTERMEDIATE": 25.0,
+    "WET": 30.0,
+}
 MIN_FIELD_CARS = 3
 MIN_STINT_LAPS = 4
 MIN_COMPOUND_STINTS = 5
@@ -154,12 +172,16 @@ def _compound_pace(stints: pd.DataFrame) -> tuple[dict[str, float], dict[str, in
     }
     if "MEDIUM" in raw:
         medium = raw["MEDIUM"]
-        raw = {compound: float(np.clip(value - medium, -2.0, 2.0))
-               for compound, value in raw.items()}
+        raw = {
+            compound: float(np.clip(value - medium, -2.0, 2.0))
+            for compound, value in raw.items()
+        }
     elif raw:
         center = float(np.median(list(raw.values())))
-        raw = {compound: float(np.clip(value - center, -2.0, 2.0))
-               for compound, value in raw.items()}
+        raw = {
+            compound: float(np.clip(value - center, -2.0, 2.0))
+            for compound, value in raw.items()
+        }
     return raw, {compound: len(samples) for compound, samples in values.items()}
 
 
@@ -175,7 +197,9 @@ def _compound_degradation(stints: pd.DataFrame) -> tuple[dict[str, float], dict[
             continue
         center = float(np.median(values))
         mad = float(np.median(np.abs(values - center)))
-        median[compound] = float(np.clip(center, -0.05, 0.25))
+        # The simulator uses this only as a future ageing penalty, so negative net
+        # slopes (fuel/track effect dominating wear) are clipped to zero.
+        median[compound] = float(np.clip(center, 0.0, 0.25))
         scale[compound] = float(np.clip(max(0.01, 1.4826 * mad), 0.01, 0.30))
     return median, scale, counts
 
@@ -208,12 +232,14 @@ def calibrate_tyre_priors(datasets: list[pd.DataFrame]) -> tuple[TyrePriorModel,
 
     pace_delta = dict(DEFAULT_PACE_DELTA)
     pace_delta.update(pace)
+    degradation_full = dict(DEFAULT_DEGRADATION)
+    degradation_full.update(degradation)
     observed_pit_age = dict(DEFAULT_PIT_AGE)
     observed_pit_age.update(pit_age)
     model = TyrePriorModel(
         enabled=bool(pace or degradation or pit_age),
         pace_delta_s=pace_delta,
-        relative_degradation_s_per_lap=degradation,
+        relative_degradation_s_per_lap=degradation_full,
         degradation_scale_s_per_lap=degradation_scale,
         observed_pit_age_p50=observed_pit_age,
         observations={
@@ -246,3 +272,33 @@ def calibrate_tyre_priors(datasets: list[pd.DataFrame]) -> tuple[TyrePriorModel,
 
 def as_payload(model: TyrePriorModel) -> dict[str, Any]:
     return asdict(model)
+
+
+def maps_from_payload(
+    payload: dict[str, Any] | None,
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    """Return validated simulator maps with backward-compatible fallbacks."""
+    pace = dict(DEFAULT_PACE_DELTA)
+    degradation = dict(DEFAULT_DEGRADATION)
+    pit_age = dict(DEFAULT_PIT_AGE)
+    if not isinstance(payload, dict):
+        return pace, degradation, pit_age
+
+    sources = (
+        ("pace_delta_s", pace, -5.0, 5.0),
+        ("relative_degradation_s_per_lap", degradation, 0.0, 0.5),
+        ("observed_pit_age_p50", pit_age, 2.0, 80.0),
+    )
+    for field, target, lower, upper in sources:
+        values = payload.get(field)
+        if not isinstance(values, dict):
+            continue
+        for compound in ALL_COMPOUNDS:
+            try:
+                value = float(values[compound])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if np.isfinite(value) and lower <= value <= upper:
+                target[compound] = value
+    pace["MEDIUM"] = 0.0
+    return pace, degradation, pit_age
