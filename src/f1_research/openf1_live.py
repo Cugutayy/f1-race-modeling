@@ -1,6 +1,6 @@
 """OpenF1 ingestion with REST bootstrap and MQTT live streaming.
 
-Historical OpenF1 remains useful without credentials.  Real-time access is a paid,
+Historical OpenF1 remains useful without credentials. Real-time access is a paid,
 authenticated provider feature; this module never fabricates a live connection when
 credentials or the optional MQTT dependency are absent.
 """
@@ -34,14 +34,41 @@ DEFAULT_TOPICS = (
 )
 
 
+def _provider_time_key(row: dict[str, Any]) -> tuple[int, Any]:
+    """Deterministic provider ordering used by REST capture and replay provenance.
+
+    OpenF1's dated rows are sorted chronologically. Missing or malformed timestamps
+    are kept after dated rows and retain deterministic lexical/stable ordering rather
+    than depending on ``datetime.now()`` during a sort key calculation.
+    """
+    raw = row.get("date") or row.get("date_start")
+    if raw is None:
+        return 1, ""
+    text = str(raw)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return 0, parsed.astimezone(UTC)
+    except ValueError:
+        return 1, text
+
+
+def _ordered_provider_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rows, key=_provider_time_key)
+
+
 class OpenF1Client:
     def __init__(self, token: str | None = None, timeout_s: float = 30.0):
         self.token = token
         self.timeout_s = timeout_s
         self.session = requests.Session()
-        retry = Retry(total=4, backoff_factor=0.75,
-                      status_forcelist=[429, 500, 502, 503, 504],
-                      allowed_methods=["GET", "POST"])
+        retry = Retry(
+            total=4,
+            backoff_factor=0.75,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.headers.update({"User-Agent": "CugutayyF1RaceIntelligence/0.2"})
         if token:
@@ -59,8 +86,10 @@ class OpenF1Client:
         response = requests.post(
             TOKEN_URL,
             data={"username": username, "password": password},
-            headers={"Content-Type": "application/x-www-form-urlencoded",
-                     "User-Agent": "CugutayyF1RaceIntelligence/0.2"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "CugutayyF1RaceIntelligence/0.2",
+            },
             timeout=30,
         )
         response.raise_for_status()
@@ -87,7 +116,12 @@ class OpenF1Client:
 
 
 class CaptureWriter:
-    """Append immutable raw messages and atomically publish the latest state."""
+    """Append immutable raw messages and atomically publish the latest state.
+
+    The capture hash is maintained incrementally. An existing capture is scanned once
+    when the writer opens, then each appended UTF-8 JSONL record updates the hash in
+    O(record_size). Publishing never rereads the growing capture file.
+    """
 
     def __init__(self, output: Path):
         self.output = Path(output)
@@ -95,13 +129,27 @@ class CaptureWriter:
         self.raw_path = self.output / "events.jsonl"
         self.state_path = self.output / "state.json"
         self.manifest_path = self.output / "manifest.json"
+        self._raw_hasher = hashlib.sha256()
+        self.raw_bytes = 0
         self.count = 0
+        if self.raw_path.exists():
+            with self.raw_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    self._raw_hasher.update(chunk)
+                    self.raw_bytes += len(chunk)
+                    self.count += chunk.count(b"\n")
 
     def append(self, topic: str, payload: dict[str, Any], received_at: datetime) -> None:
-        row = {"topic": topic, "received_at": received_at.astimezone(UTC).isoformat(), "payload": payload}
-        line = json.dumps(row, separators=(",", ":"), allow_nan=False)
-        with self.raw_path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        row = {
+            "topic": topic,
+            "received_at": received_at.astimezone(UTC).isoformat(),
+            "payload": payload,
+        }
+        encoded = (json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        with self.raw_path.open("ab") as handle:
+            handle.write(encoded)
+        self._raw_hasher.update(encoded)
+        self.raw_bytes += len(encoded)
         self.count += 1
 
     def publish(self, snapshot: dict[str, Any]) -> None:
@@ -109,31 +157,44 @@ class CaptureWriter:
         temp = self.state_path.with_suffix(".tmp")
         temp.write_bytes(raw)
         temp.replace(self.state_path)
-        digest = hashlib.sha256(self.raw_path.read_bytes()).hexdigest() if self.raw_path.exists() else None
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "provider": "OpenF1",
             "captured_rows": self.count,
-            "events_sha256": digest,
+            "capture_bytes": self.raw_bytes,
+            "events_sha256": self._raw_hasher.copy().hexdigest(),
             "state_sha256": hashlib.sha256(raw).hexdigest(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
         self.manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-def bootstrap(client: OpenF1Client, store: RaceStateStore, writer: CaptureWriter,
-              session_key: int | str = "latest") -> dict[str, Any]:
-    """REST bootstrap. Car/location history is intentionally not bulk-downloaded."""
-    topics = ("sessions", "drivers", "position", "intervals", "laps", "stints", "pit", "weather", "race_control")
+def bootstrap(
+    client: OpenF1Client,
+    store: RaceStateStore,
+    writer: CaptureWriter,
+    session_key: int | str = "latest",
+) -> dict[str, Any]:
+    """REST bootstrap using one canonical order for raw capture and state mutation.
+
+    Car/location history is intentionally not bulk-downloaded. Every row is written
+    and ingested in the same deterministic event-time order and with the same
+    ``received_at`` timestamp, so replaying ``events.jsonl`` reconstructs the same
+    semantic state instead of depending on provider response ordering.
+    """
+    topics = (
+        "sessions", "drivers", "position", "intervals", "laps", "stints", "pit",
+        "weather", "race_control",
+    )
     for topic in topics:
-        rows = client.get(topic, session_key=session_key)
-        # Historical endpoints can be large; merging is event-time ordered inside the store.
+        rows = _ordered_provider_rows(client.get(topic, session_key=session_key))
         for row in rows:
-            now = datetime.now(UTC)
-            writer.append(topic, row, now)
-        store.ingest_many(topic, rows)
-    writer.publish(store.snapshot())
-    return store.snapshot()
+            received = datetime.now(UTC)
+            writer.append(topic, row, received)
+            store.ingest(topic, row, received)
+    snapshot = store.snapshot()
+    writer.publish(snapshot)
+    return snapshot
 
 
 def replay_jsonl(path: Path, output: Path | None = None) -> dict[str, Any]:
@@ -157,8 +218,13 @@ def replay_jsonl(path: Path, output: Path | None = None) -> dict[str, Any]:
     return snapshot
 
 
-def stream(client: OpenF1Client, store: RaceStateStore, writer: CaptureWriter,
-           topics: tuple[str, ...] = DEFAULT_TOPICS, publish_every: int = 25) -> None:
+def stream(
+    client: OpenF1Client,
+    store: RaceStateStore,
+    writer: CaptureWriter,
+    topics: tuple[str, ...] = DEFAULT_TOPICS,
+    publish_every: int = 25,
+) -> None:
     """Subscribe to OpenF1 MQTT. Requires provider live entitlement and paho-mqtt."""
     if not client.token:
         raise RuntimeError("Live streaming requires OPENF1_TOKEN or OPENF1_USERNAME/OPENF1_PASSWORD")
@@ -183,7 +249,6 @@ def stream(client: OpenF1Client, store: RaceStateStore, writer: CaptureWriter,
             mqtt_client.subscribe(f"v1/{name}", qos=0)
 
     def on_message(_mqtt_client, _userdata, message):
-        nonlocal stopped
         received = datetime.now(UTC)
         try:
             decoded = json.loads(message.payload.decode("utf-8"))
@@ -197,7 +262,7 @@ def stream(client: OpenF1Client, store: RaceStateStore, writer: CaptureWriter,
             if writer.count % max(1, publish_every) == 0:
                 writer.publish(store.snapshot(received))
         except (UnicodeError, json.JSONDecodeError, ValueError):
-            # Malformed provider messages are preserved nowhere and never mutate state.
+            # Malformed provider messages never mutate canonical state.
             return
 
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -216,7 +281,11 @@ def stream(client: OpenF1Client, store: RaceStateStore, writer: CaptureWriter,
         writer.publish(store.snapshot())
 
 
-def run_capture(output: Path, session_key: int | str = "latest", no_stream: bool = False) -> dict[str, Any]:
+def run_capture(
+    output: Path,
+    session_key: int | str = "latest",
+    no_stream: bool = False,
+) -> dict[str, Any]:
     client = OpenF1Client.from_env()
     parsed_session = int(session_key) if str(session_key).isdigit() else str(session_key)
     store = RaceStateStore(None if parsed_session == "latest" else int(parsed_session))
@@ -243,9 +312,11 @@ def main(argv=None):
         result = run_capture(args.output, args.session_key, args.no_stream)
     else:
         result = replay_jsonl(args.input, args.output)
-    print(json.dumps({"session_key": result.get("session_key"),
-                      "drivers": len(result.get("drivers", [])),
-                      "updated_at": result.get("updated_at")}, indent=2))
+    print(json.dumps({
+        "session_key": result.get("session_key"),
+        "drivers": len(result.get("drivers", [])),
+        "updated_at": result.get("updated_at"),
+    }, indent=2))
 
 
 if __name__ == "__main__":
