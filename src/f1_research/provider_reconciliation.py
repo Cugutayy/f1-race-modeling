@@ -206,7 +206,6 @@ def normalize_jolpica_results(
         if number is None:
             raise ValueError("Jolpica result row has no valid race driver number")
         driver = raw.get("Driver") if isinstance(raw.get("Driver"), dict) else {}
-        constructor = raw.get("Constructor") if isinstance(raw.get("Constructor"), dict) else {}
         name_parts = [driver.get("givenName"), driver.get("familyName")]
         name = " ".join(str(value).strip() for value in name_parts if _clean_text(value)) or None
         driver_id = _clean_text(driver.get("driverId"))
