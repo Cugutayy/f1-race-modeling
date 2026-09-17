@@ -2,8 +2,9 @@
 
 This module verifies completed-race facts; it does not predict or silently repair
 provider disagreements. Jolpica, OpenF1 and FastF1 are normalized into one explicit
-schema. Hard classification fields must agree. Secondary fields are compared when at
-least two providers actually expose evidence; missing evidence remains UNKNOWN.
+schema. Hard facts are compared only when the provider contract actually supplies the
+same semantic field. Missing evidence remains explicit and is never converted to zero,
+False, or a majority-vote "truth".
 
 Driver identity uses the race number exposed by each source. Names/codes are audit
 context only and are never used to force a match when numbers disagree.
@@ -27,8 +28,14 @@ from .openf1_live import OpenF1Client
 
 HARD_FIELDS = ("position", "laps", "status_class")
 SECONDARY_FIELDS = ("grid_position", "pit_stops", "points")
+POSITION_REQUIRED_STATUSES = {"finished", "classified_lapped"}
+POSITION_OPTIONAL_STATUSES = {"dnf", "dns", "dsq"}
 FIELD_SEMANTICS = {
-    "position": "Provider-reported final/classified position.",
+    "position": (
+        "Provider-reported final/classified position. Some public providers leave position "
+        "null for DNF/DNS/DSQ rows even when other sources publish a classification order. "
+        "That absence is recorded as insufficient evidence, not invented or majority-repaired."
+    ),
     "laps": (
         "Jolpica Results.laps; OpenF1 session_result.number_of_laps; FastF1 Results.Laps "
         "when present, otherwise maximum observed FastF1 LapNumber."
@@ -43,7 +50,7 @@ FIELD_SEMANTICS = {
     ),
     "pit_stops": (
         "Count of provider pit-stop observations. Missing pit evidence stays UNKNOWN, "
-        "never zero. Equal counts do not prove identical timing semantics."
+        "never zero. Equal counts do not prove identical pit timing semantics."
     ),
     "points": "Provider-reported race points when available; missing values stay UNKNOWN.",
 }
@@ -229,9 +236,11 @@ def normalize_jolpica_results(
         "round": _positive_int(race.get("round")),
         "race_name": _clean_text(race.get("raceName")),
         "date": _clean_text(race.get("date")),
-        "circuit_id": _clean_text((race.get("Circuit") or {}).get("circuitId"))
-        if isinstance(race.get("Circuit"), dict)
-        else None,
+        "circuit_id": (
+            _clean_text((race.get("Circuit") or {}).get("circuitId"))
+            if isinstance(race.get("Circuit"), dict)
+            else None
+        ),
         "constructor_ids": sorted({
             _clean_text((raw.get("Constructor") or {}).get("constructorId"))
             for raw in raw_results
@@ -282,7 +291,7 @@ def normalize_openf1_results(
             status_class=status_class,
             grid_position=None,
             pit_stops=(len(pit_keys.get(number, set())) if pit_evidence else None),
-            points=None,
+            points=_finite_float(raw.get("points")),
             status_raw=status_class,
             driver_code=_clean_text(driver.get("name_acronym")),
             driver_name=_clean_text(driver.get("full_name")),
@@ -319,25 +328,25 @@ def normalize_fastf1_results(
         number = _positive_int(raw.get("DriverNumber"))
         if number is None:
             raise ValueError("FastF1 result row has no valid DriverNumber")
-        position = _positive_int(raw.get("Position"))
-        classified = raw.get("ClassifiedPosition")
         status = raw.get("Status")
-        status_class = _status_from_text(status, classified)
+        status_class = _status_from_text(status, raw.get("ClassifiedPosition"))
         result_laps = _positive_int(raw.get("Laps"), allow_zero=True)
         if result_laps is None:
             result_laps = lap_counts.get(number)
         if result_laps is None and status_class == "dns":
             result_laps = 0
+
         code = _clean_text(raw.get("Abbreviation")) or _clean_text(raw.get("Driver"))
         name = _clean_text(raw.get("FullName"))
         if name is None:
             first = _clean_text(raw.get("FirstName"))
             last = _clean_text(raw.get("LastName"))
             name = " ".join(value for value in (first, last) if value) or None
+
         rows.append(ResultRow(
             provider="FastF1",
             driver_number=number,
-            position=position,
+            position=_positive_int(raw.get("Position")),
             laps=result_laps,
             status_class=status_class,
             grid_position=_positive_int(raw.get("GridPosition"), allow_zero=True),
@@ -360,33 +369,86 @@ def _validated_rows(rows: Iterable[ResultRow]) -> list[ResultRow]:
     return sorted(rows, key=lambda row: (row.position is None, row.position or 10_000, row.driver_number))
 
 
-def _provider_integrity(provider: str, rows: list[ResultRow]) -> list[Mismatch]:
-    output: list[Mismatch] = []
+def _position_required(row: ResultRow) -> bool:
+    return row.status_class in POSITION_REQUIRED_STATUSES
+
+
+def _provider_integrity(
+    provider: str,
+    rows: list[ResultRow],
+) -> tuple[list[Mismatch], list[dict[str, Any]]]:
+    """Return hard integrity failures plus explicit hard-evidence gaps."""
+    failures: list[Mismatch] = []
+    insufficient: list[dict[str, Any]] = []
     positions = [row.position for row in rows if row.position is not None]
-    if len(positions) != len(rows):
-        missing = [row.driver_number for row in rows if row.position is None]
-        output.append(Mismatch(
-            provider, provider, None, "classification_integrity", missing, None, "hard",
-            "provider has result rows without final position",
-        ))
+
     if len(positions) != len(set(positions)):
-        output.append(Mismatch(
-            provider, provider, None, "classification_integrity", positions, None, "hard",
+        failures.append(Mismatch(
+            provider,
+            provider,
+            None,
+            "classification_integrity",
+            positions,
+            None,
+            "hard",
             "provider has duplicate final positions",
         ))
-    if len(positions) == len(rows) and sorted(positions) != list(range(1, len(rows) + 1)):
-        output.append(Mismatch(
-            provider, provider, None, "classification_integrity", sorted(positions), None, "hard",
-            "provider classification is not consecutive 1..N",
+    if positions and sorted(positions) != list(range(1, max(positions) + 1)):
+        failures.append(Mismatch(
+            provider,
+            provider,
+            None,
+            "classification_integrity",
+            sorted(positions),
+            None,
+            "hard",
+            "provider observed positions are not consecutive from 1 through max(position)",
         ))
+
     for row in rows:
-        for field in HARD_FIELDS:
-            if getattr(row, field) is None:
-                output.append(Mismatch(
-                    provider, provider, row.driver_number, field, None, None, "hard",
-                    "provider is missing a required reconciliation field",
+        if row.position is None:
+            if _position_required(row):
+                failures.append(Mismatch(
+                    provider,
+                    provider,
+                    row.driver_number,
+                    "position",
+                    None,
+                    None,
+                    "hard",
+                    "provider is missing position for a classified finisher/lapped car",
                 ))
-    return output
+            else:
+                insufficient.append({
+                    "provider": provider,
+                    "driver_number": row.driver_number,
+                    "field": "position",
+                    "status_class": row.status_class,
+                    "reason": "provider does not expose a final position for this non-finisher",
+                })
+        if row.laps is None:
+            failures.append(Mismatch(
+                provider,
+                provider,
+                row.driver_number,
+                "laps",
+                None,
+                None,
+                "hard",
+                "provider is missing completed laps",
+            ))
+        if row.status_class is None:
+            failures.append(Mismatch(
+                provider,
+                provider,
+                row.driver_number,
+                "status_class",
+                None,
+                None,
+                "hard",
+                "provider is missing normalized classification status",
+            ))
+    return failures, insufficient
 
 
 def _row_index(rows: Iterable[ResultRow]) -> dict[int, ResultRow]:
@@ -406,38 +468,88 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
     """Compare normalized provider results without repairing disagreements."""
     if len(provider_rows) < 2:
         raise ValueError("At least two providers are required for reconciliation")
+
     normalized = {name: _validated_rows(rows) for name, rows in provider_rows.items()}
     providers = sorted(normalized)
     mismatches: list[Mismatch] = []
+    insufficient_hard: list[dict[str, Any]] = []
     insufficient_secondary: list[dict[str, Any]] = []
 
     for provider in providers:
-        mismatches.extend(_provider_integrity(provider, normalized[provider]))
+        failures, missing = _provider_integrity(provider, normalized[provider])
+        mismatches.extend(failures)
+        insufficient_hard.extend(missing)
 
     for i, provider_a in enumerate(providers):
         for provider_b in providers[i + 1:]:
             left = _row_index(normalized[provider_a])
             right = _row_index(normalized[provider_b])
             left_numbers, right_numbers = set(left), set(right)
+
             for number in sorted(left_numbers - right_numbers):
                 mismatches.append(Mismatch(
-                    provider_a, provider_b, number, "driver_presence", True, False, "hard",
+                    provider_a,
+                    provider_b,
+                    number,
+                    "driver_presence",
+                    True,
+                    False,
+                    "hard",
                     "driver exists only in first provider",
                 ))
             for number in sorted(right_numbers - left_numbers):
                 mismatches.append(Mismatch(
-                    provider_a, provider_b, number, "driver_presence", False, True, "hard",
+                    provider_a,
+                    provider_b,
+                    number,
+                    "driver_presence",
+                    False,
+                    True,
+                    "hard",
                     "driver exists only in second provider",
                 ))
+
             for number in sorted(left_numbers & right_numbers):
                 a, b = left[number], right[number]
-                for field in HARD_FIELDS:
+
+                if a.position is None or b.position is None:
+                    insufficient_hard.append({
+                        "provider_a": provider_a,
+                        "provider_b": provider_b,
+                        "driver_number": number,
+                        "field": "position",
+                        "value_a": a.position,
+                        "value_b": b.position,
+                        "status_a": a.status_class,
+                        "status_b": b.status_class,
+                        "reason": "at least one provider does not expose comparable non-finisher position evidence",
+                    })
+                elif a.position != b.position:
+                    mismatches.append(Mismatch(
+                        provider_a,
+                        provider_b,
+                        number,
+                        "position",
+                        a.position,
+                        b.position,
+                        "hard",
+                        "provider values disagree",
+                    ))
+
+                for field in ("laps", "status_class"):
                     value_a, value_b = getattr(a, field), getattr(b, field)
                     if value_a != value_b:
                         mismatches.append(Mismatch(
-                            provider_a, provider_b, number, field, value_a, value_b, "hard",
+                            provider_a,
+                            provider_b,
+                            number,
+                            field,
+                            value_a,
+                            value_b,
+                            "hard",
                             "provider values disagree",
                         ))
+
                 for field in SECONDARY_FIELDS:
                     value_a, value_b = getattr(a, field), getattr(b, field)
                     if value_a is None or value_b is None:
@@ -451,32 +563,48 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                         })
                     elif not _values_equal(field, value_a, value_b):
                         mismatches.append(Mismatch(
-                            provider_a, provider_b, number, field, value_a, value_b, "warning",
+                            provider_a,
+                            provider_b,
+                            number,
+                            field,
+                            value_a,
+                            value_b,
+                            "warning",
                             "secondary provider values disagree; no truth is elected",
                         ))
+
                 if a.driver_code and b.driver_code and a.driver_code.upper() != b.driver_code.upper():
                     mismatches.append(Mismatch(
-                        provider_a, provider_b, number, "driver_code", a.driver_code, b.driver_code,
-                        "warning", "audit identity label differs; number match is retained",
+                        provider_a,
+                        provider_b,
+                        number,
+                        "driver_code",
+                        a.driver_code,
+                        b.driver_code,
+                        "warning",
+                        "audit identity label differs; number match is retained",
                     ))
 
     hard = [row for row in mismatches if row.severity == "hard"]
-    warning = [row for row in mismatches if row.severity == "warning"]
-    row_counts = {provider: len(rows) for provider, rows in normalized.items()}
+    warnings = [row for row in mismatches if row.severity == "warning"]
     normalized_payload = {
         provider: [asdict(row) for row in rows]
         for provider, rows in normalized.items()
     }
+    verification_status = "FAIL" if hard else ("PASS_WITH_GAPS" if insufficient_hard else "PASS")
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "cross_provider_completed_race_reconciliation",
         "providers": providers,
-        "row_counts": row_counts,
+        "row_counts": {provider: len(rows) for provider, rows in normalized.items()},
         "passed": not hard,
+        "verification_status": verification_status,
         "hard_mismatch_count": len(hard),
-        "warning_count": len(warning),
+        "warning_count": len(warnings),
+        "insufficient_hard_count": len(insufficient_hard),
         "insufficient_secondary_count": len(insufficient_secondary),
         "mismatches": [asdict(row) for row in mismatches],
+        "insufficient_hard_evidence": insufficient_hard,
         "insufficient_secondary": insufficient_secondary,
         "normalized": normalized_payload,
         "normalized_sha256": {
@@ -488,6 +616,8 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
             "identity_key": "race driver number",
             "hard_fields": list(HARD_FIELDS),
             "secondary_fields": list(SECONDARY_FIELDS),
+            "nonfinisher_position_may_be_unknown": True,
+            "missing_hard_evidence_is_not_mismatch": True,
             "missing_secondary_is_unknown": True,
             "repair_disagreements": False,
             "majority_vote": False,
@@ -496,13 +626,19 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
 
 
 def _sha256_json(value: Any) -> str:
-    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    raw = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=str,
+    ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, allow_nan=False), encoding="utf-8")
+    path.write_text(json.dumps(value, indent=2, allow_nan=False, default=str), encoding="utf-8")
 
 
 def collect_jolpica_raw(year: int, round_number: int, cache: Path) -> dict[str, Any]:
@@ -552,6 +688,7 @@ def collect_fastf1_raw(year: int, round_number: int, cache: Path) -> dict[str, A
         raise ValueError("FastF1 reconciliation returned no results")
     if session.laps is None or session.laps.empty:
         raise ValueError("FastF1 reconciliation returned no laps")
+
     event = session.event
     event_meta = {
         "EventName": str(event.get("EventName")),
@@ -559,11 +696,13 @@ def collect_fastf1_raw(year: int, round_number: int, cache: Path) -> dict[str, A
         "EventDate": str(event.get("EventDate")),
     }
     lap_columns = [
-        column for column in ("DriverNumber", "LapNumber", "PitInTime")
+        column
+        for column in ("DriverNumber", "LapNumber", "PitInTime")
         if column in session.laps
     ]
     if not {"DriverNumber", "LapNumber"} <= set(lap_columns):
         raise ValueError("FastF1 laps lack DriverNumber/LapNumber")
+
     return {
         "event": event_meta,
         "results": json.loads(session.results.to_json(orient="records", date_format="iso")),
@@ -594,17 +733,19 @@ def reconcile_completed_race(
     _write_json(raw_dir / "fastf1.json", fastf1)
 
     jolpica_rows, jolpica_meta = normalize_jolpica_results(
-        jolpica["results"], jolpica["pitstops"]
+        jolpica["results"],
+        jolpica["pitstops"],
     )
     openf1_rows = normalize_openf1_results(
-        openf1["session_result"], openf1["drivers"], openf1["pit"]
+        openf1["session_result"],
+        openf1["drivers"],
+        openf1["pit"],
     )
     fastf1_rows = normalize_fastf1_results(fastf1["results"], fastf1["laps"])
 
     session = openf1["session"]
-    openf1_year = _positive_int(session.get("year"))
-    if openf1_year != int(year):
-        raise ValueError(f"OpenF1 session year mismatch: expected {year}, got {openf1_year}")
+    if _positive_int(session.get("year")) != int(year):
+        raise ValueError(f"OpenF1 session year mismatch: expected {year}, got {session.get('year')}")
     if jolpica_meta.get("round") != int(round_number):
         raise ValueError("Jolpica round metadata mismatch")
     if _positive_int(fastf1["event"].get("RoundNumber")) != int(round_number):
@@ -634,27 +775,37 @@ def reconcile_completed_race(
             "Agreement among public providers does not make them statistically independent sources.",
             "Result reconciliation verifies completed-race facts, not live publication latency.",
             "FastF1 lap count may be derived from maximum observed LapNumber when Results.Laps is absent.",
+            "Some providers omit a non-finisher classification position; this stays explicit evidence gap.",
             "Secondary fields are compared only when both providers expose evidence; missing evidence stays unknown.",
             "A provider disagreement is reported and never resolved by majority vote.",
             "OpenF1 session_key is explicit; this tool does not guess which session belongs to a round.",
         ],
     })
+
     _write_json(output / "reconciliation.json", report)
     pd.DataFrame(report["mismatches"]).to_csv(output / "mismatches.csv", index=False)
+    pd.DataFrame(report["insufficient_hard_evidence"]).to_csv(
+        output / "insufficient_hard_evidence.csv",
+        index=False,
+    )
     pd.DataFrame(report["insufficient_secondary"]).to_csv(
-        output / "insufficient_secondary.csv", index=False
+        output / "insufficient_secondary.csv",
+        index=False,
     )
     return report
 
 
 def main(argv=None) -> None:
-    parser = argparse.ArgumentParser(description="Reconcile a completed race across three public providers")
+    parser = argparse.ArgumentParser(
+        description="Reconcile a completed race across three public providers"
+    )
     parser.add_argument("--year", type=int, required=True)
     parser.add_argument("--round", dest="round_number", type=int, required=True)
     parser.add_argument("--openf1-session-key", type=int, required=True)
     parser.add_argument("--cache", type=Path, default=Path("data/reconciliation-cache"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+
     report = reconcile_completed_race(
         year=args.year,
         round_number=args.round_number,
@@ -664,8 +815,10 @@ def main(argv=None) -> None:
     )
     print(json.dumps({
         "passed": report["passed"],
+        "verification_status": report["verification_status"],
         "hard_mismatch_count": report["hard_mismatch_count"],
         "warning_count": report["warning_count"],
+        "insufficient_hard_count": report["insufficient_hard_count"],
         "insufficient_secondary_count": report["insufficient_secondary_count"],
         "output": str(args.output),
     }, indent=2))
