@@ -58,6 +58,11 @@ def main(argv=None):
                     choices=["hist_gradient_boosting", "extra_trees", "xgboost", "lightgbm",
                              "catboost", "tabicl_v2"])
     v2.add_argument("--max-specs-per-model", type=int, default=4)
+    v2.add_argument(
+        "--no-ensemble",
+        action="store_true",
+        help="Skip rank-ensemble tuning. Useful for expensive single-model challenger runs.",
+    )
 
     predict = commands.add_parser("predict")
     predict.add_argument("--input", type=Path, required=True, help="Historical results CSV")
@@ -107,7 +112,9 @@ def main(argv=None):
         metrics, predictions, audit = benchmark_v2(
             frame, test_events=args.test_events, tuning_events=args.tuning_events,
             calibration_events=args.calibration_events, min_fit_events=args.min_fit_events,
-            modern_names=tuple(args.models), max_specs_per_model=args.max_specs_per_model)
+            modern_names=tuple(args.models), max_specs_per_model=args.max_specs_per_model,
+            include_ensemble=not args.no_ensemble,
+        )
         report = save_v2_report(frame, metrics, predictions, audit, args.output,
                                 provenance=_provenance(args.input))
         print(f"V2 sealed benchmark {report['run_id']} -> {args.output}")
