@@ -77,7 +77,7 @@ def build_estimator(spec: CandidateSpec, random_state: int = 42) -> Pipeline:
     name, params = spec.name, dict(spec.params)
     if name == "hist_gradient_boosting":
         settings = _with_overrides({
-            "loss": "huber", "random_state": random_state, "early_stopping": True,
+            "loss": "absolute_error", "random_state": random_state, "early_stopping": True,
             "max_iter": 150, "learning_rate": 0.05, "max_leaf_nodes": 15,
             "l2_regularization": 5.0, "min_samples_leaf": 12,
         }, params)
