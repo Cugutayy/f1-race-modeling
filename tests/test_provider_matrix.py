@@ -53,6 +53,7 @@ def test_matrix_preserves_real_artifact_identity_and_hash(tmp_path: Path):
     [
         ({"schema_version": 3}, "unsupported reconciliation schema"),
         ({"reconciliation_schema_version": 3}, "unsupported reconciliation schema"),
+        ({"reconciliation_schema_version": None}, "passing artifact has no reconciliation schema"),
         ({"artifact_schema_version": 2}, "unsupported artifact schema"),
         ({"passed": True, "verification_status": "FAIL"}, "passed and verification_status disagree"),
         ({"event_identity": {"verified": False}}, "passing audit cannot have failed event identity"),
@@ -82,3 +83,28 @@ def test_matrix_rejects_duplicate_session_key(tmp_path: Path):
 def test_matrix_requires_at_least_one_real_artifact():
     with pytest.raises(ValueError, match="At least one"):
         build_matrix([])
+
+
+def test_matrix_preserves_pre_reconciliation_failure_without_inventing_schema(tmp_path: Path):
+    source = _artifact(
+        tmp_path / "failed.json",
+        passed=False,
+        verification_status="FAIL",
+        reconciliation_schema_version=None,
+        provider_errors={"OpenF1": "HTTPError: upstream unavailable"},
+        event_identity={"verified": False},
+        hard_mismatch_count=1,
+    )
+    matrix = build_matrix([source])
+
+    assert matrix["fail_count"] == 1
+    row = matrix["events"][0]
+    assert row["passed"] is False
+    assert row["reconciliation_performed"] is False
+    assert row["provider_error_count"] == 1
+
+
+def test_matrix_marks_completed_reconciliation_explicitly(tmp_path: Path):
+    source = _artifact(tmp_path / "reconciled.json")
+    row = build_matrix([source])["events"][0]
+    assert row["reconciliation_performed"] is True
