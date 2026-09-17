@@ -26,8 +26,10 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
 DEFAULT_MODEL = ROOT / "reports" / "local" / "lap-strict" / "next_lap_strict.joblib"
 DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-strict" / "strategy_priors.json"
+DEFAULT_EVIDENCE = ROOT / "reports" / "local" / "model_evidence.json"
 MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
 MAX_TELEMETRY_TAIL_BYTES = 4 * 1024 * 1024
 
 app = FastAPI(title="F1 Race Intelligence API", version="1.0.0", docs_url="/docs")
@@ -59,6 +61,10 @@ def _model_path() -> Path:
 
 def _priors_path() -> Path:
     return _path("F1_STRATEGY_PRIORS_PATH", DEFAULT_PRIORS)
+
+
+def _evidence_path() -> Path:
+    return _path("F1_MODEL_EVIDENCE_PATH", DEFAULT_EVIDENCE)
 
 
 def _authorize(authorization: str | None = Header(default=None)) -> None:
@@ -96,6 +102,28 @@ def _read_capture_manifest() -> dict[str, Any]:
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _read_model_evidence() -> dict[str, Any]:
+    path = _evidence_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Model evidence artifact is not installed")
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > MAX_EVIDENCE_BYTES:
+            raise HTTPException(status_code=503, detail="Model evidence failed size validation")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Model evidence is unreadable") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise HTTPException(status_code=503, detail="Model evidence schema is unsupported")
+    if value.get("evidence_kind") != "retrospective_sealed_historical_benchmark":
+        raise HTTPException(status_code=503, detail="Model evidence kind is unsupported")
+    if not isinstance(value.get("models"), list) or not isinstance(value.get("sealed_test_events"), int):
+        raise HTTPException(status_code=503, detail="Model evidence is incomplete")
+    return value
 
 
 def _age_s(raw: Any) -> float | None:
@@ -255,6 +283,7 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
     state_path = _state_path()
     model_path = _model_path()
     priors_path = _priors_path()
+    evidence_path = _evidence_path()
     state = _read_state() if state_path.exists() else {}
     manifest = _read_capture_manifest()
     stream = manifest.get("stream") if isinstance(manifest.get("stream"), dict) else {}
@@ -271,6 +300,7 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
         "state_age_s": _state_age_s(state),
         "strict_model": model_path.exists(),
         "strategy_priors": priors_path.exists(),
+        "model_evidence": evidence_path.exists(),
         "session_key": state.get("session_key"),
         "current_lap": state.get("current_lap"),
         "rejected_stale_messages": state.get("rejected_stale_messages", 0),
@@ -284,6 +314,11 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
         "disconnect_count": stream.get("disconnect_count"),
         "last_stream_error": stream.get("last_error"),
     }))
+
+
+@app.get("/v1/evidence")
+def evidence(_: None = Depends(_authorize)) -> JSONResponse:
+    return JSONResponse(_safe(_read_model_evidence()))
 
 
 @app.get("/v1/live")
