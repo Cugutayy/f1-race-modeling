@@ -1,7 +1,7 @@
 from f1_research.provider_reconciliation import ResultRow, normalize_openf1_results, reconcile_results
 
 
-def _row(provider, *, number=30, position=None, laps=46, status="dnf", points=0.0):
+def _row(provider, *, number, position, laps, status, points=0.0, code=None):
     return ResultRow(
         provider=provider,
         driver_number=number,
@@ -9,15 +9,30 @@ def _row(provider, *, number=30, position=None, laps=46, status="dnf", points=0.
         laps=laps,
         status_class=status,
         points=points,
-        driver_code="LAW",
+        driver_code=code or str(number),
     )
+
+
+def _provider_rows(provider, *, target_position, target_status="dnf"):
+    return [
+        _row(provider, number=4, position=1, laps=57, status="finished", points=25.0, code="NOR"),
+        _row(
+            provider,
+            number=30,
+            position=target_position,
+            laps=46,
+            status=target_status,
+            points=0.0,
+            code="LAW",
+        ),
+    ]
 
 
 def test_nonfinisher_missing_position_is_evidence_gap_not_hard_mismatch():
     report = reconcile_results({
-        "Jolpica": [_row("Jolpica", position=1)],
-        "FastF1": [_row("FastF1", position=1)],
-        "OpenF1": [_row("OpenF1", position=None)],
+        "Jolpica": _provider_rows("Jolpica", target_position=2),
+        "FastF1": _provider_rows("FastF1", target_position=2),
+        "OpenF1": _provider_rows("OpenF1", target_position=None),
     })
 
     assert report["passed"] is True
@@ -29,8 +44,8 @@ def test_nonfinisher_missing_position_is_evidence_gap_not_hard_mismatch():
 
 def test_finished_driver_missing_position_remains_hard_failure():
     report = reconcile_results({
-        "Jolpica": [_row("Jolpica", position=1, status="finished")],
-        "OpenF1": [_row("OpenF1", position=None, status="finished")],
+        "Jolpica": _provider_rows("Jolpica", target_position=2, target_status="finished"),
+        "OpenF1": _provider_rows("OpenF1", target_position=None, target_status="finished"),
     })
 
     assert report["passed"] is False
