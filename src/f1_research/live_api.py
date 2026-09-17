@@ -25,8 +25,6 @@ from .live_quality import classify as classify_live_quality
 from .live_protocol import encode as encode_live_envelope, envelope as live_envelope
 from .reliability import reliability_overrides_from_state
 from .monitoring import snapshot as monitoring_snapshot
-from .model_registry import sha256_file
-from .prediction_engine import forecast as auditable_forecast
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
 
@@ -75,11 +73,6 @@ def _priors_path() -> Path:
 def _evidence_path() -> Path:
     return _path("F1_MODEL_EVIDENCE_PATH", DEFAULT_EVIDENCE)
 
-
-
-def _prediction_ledger_path() -> Path:
-    configured = os.environ.get("F1_PREDICTION_LEDGER_PATH")
-    return Path(configured).expanduser().resolve() if configured else _state_path().with_name("predictions.jsonl")
 
 
 def _max_live_age_s() -> float:
@@ -494,40 +487,6 @@ def live(
 ) -> JSONResponse:
     return JSONResponse(_live_report(total_laps, samples))
 
-
-
-@app.get("/v1/prediction")
-def prediction(
-    total_laps: int = Query(ge=2, le=100),
-    samples: int = Query(default=20000, ge=1000, le=50000),
-    _: None = Depends(_authorize),
-) -> JSONResponse:
-    state = _read_state()
-    _trusted_live_audit(state)
-    model_path = _model_path()
-    evidence_path = _evidence_path()
-    if not model_path.exists():
-        raise HTTPException(status_code=503, detail="Auditable prediction requires installed model artifact")
-    if not evidence_path.exists():
-        raise HTTPException(status_code=503, detail="Auditable prediction requires model evidence artifact")
-    cutoff = state.get("latest_provider_event_at")
-    if not isinstance(cutoff, str) or not cutoff:
-        raise HTTPException(status_code=503, detail="Provider cutoff timestamp is unavailable")
-    try:
-        result = auditable_forecast(
-            state=state,
-            total_laps=total_laps,
-            model_id=model_path.stem,
-            model_sha256=sha256_file(model_path),
-            evidence_sha256=sha256_file(evidence_path),
-            cutoff_at=cutoff,
-            ledger_path=_prediction_ledger_path(),
-            samples=samples,
-            max_age_s=_max_live_age_s(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return JSONResponse(_safe(result))
 
 
 @app.get("/v1/telemetry")
