@@ -192,8 +192,8 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
             start = lap.start
             if pd.isna(start):
                 continue
-            completed = [(available, duration) for available, duration in completed if available <= start]
-            values = np.asarray([duration for _, duration in completed[-5:]], dtype=float)
+            usable = [(available, duration) for available, duration in completed if available <= start]
+            values = np.asarray([duration for _, duration in usable[-5:]], dtype=float)
             if len(values) >= minimum_history:
                 last = float(values[-1])
                 recent3 = values[-3:]
@@ -203,7 +203,7 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
                 pit_count = 0
                 if not pits.empty:
                     pit_count = int(((pits.driver_number == driver) & (pits.pit_time <= start)).sum())
-                source_times = [available for available, _ in completed[-5:]]
+                source_times = [available for available, _ in usable[-5:]]
                 for field in ("weather_available_at", "race_control_available_at"):
                     value = lap.get(field)
                     if pd.notna(value):
@@ -348,6 +348,15 @@ def benchmark_lap_models(datasets: list[pd.DataFrame], *,
     return pd.DataFrame(results), audit
 
 
+def _safety_car_active(value: Any) -> float:
+    if not value:
+        return 0.0
+    message = str(value).upper()
+    if any(token in message for token in ("ENDING", "IN THIS LAP", "WITHDRAWN", "ENDED")):
+        return 0.0
+    return 1.0
+
+
 def live_feature_rows(snapshot: dict[str, Any]) -> pd.DataFrame:
     """Build inference rows from the canonical live state using the training schema."""
     weather = snapshot.get("weather") or {}
@@ -372,8 +381,8 @@ def live_feature_rows(snapshot: dict[str, Any]) -> pd.DataFrame:
             "track_temperature_c": weather.get("track_temperature_c"),
             "humidity_pct": weather.get("humidity_pct"),
             "rainfall": float(bool(weather.get("rainfall"))) if weather.get("rainfall") is not None else np.nan,
-            "safety_car_active": float(bool(snapshot.get("safety_car"))),
-            "yellow_recent": float(str(snapshot.get("flag") or "").upper().find("YELLOW") >= 0),
+            "safety_car_active": _safety_car_active(snapshot.get("safety_car")),
+            "yellow_recent": float("YELLOW" in str(snapshot.get("flag") or "").upper()),
         })
     return pd.DataFrame(rows)
 
