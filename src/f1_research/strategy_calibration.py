@@ -21,7 +21,7 @@ from .reliability import as_payload as reliability_payload
 from .reliability import calibrate_reliability, records_from_raw
 from .strategy import SimulationConfig
 from .tyre_calibration import as_payload as tyre_payload
-from .tyre_calibration import calibrate_tyre_priors
+from .tyre_calibration import calibrate_tyre_priors, maps_from_payload
 
 
 @dataclass(frozen=True)
@@ -224,6 +224,7 @@ def load_simulation_config(path: Path, *, samples: int | None = None,
     priors = payload.get("priors") if isinstance(payload, dict) else None
     if not isinstance(priors, dict):
         raise ValueError("Strategy prior file has no priors object")
+    pace, degradation, pit_age = maps_from_payload(payload.get("tyre"))
     base = SimulationConfig()
     config = SimulationConfig(
         samples=int(samples if samples is not None else base.samples),
@@ -236,5 +237,8 @@ def load_simulation_config(path: Path, *, samples: int | None = None,
         safety_car_gap_multiplier=base.safety_car_gap_multiplier,
         safety_car_pit_loss_multiplier=base.safety_car_pit_loss_multiplier,
         max_degradation_s_per_lap=base.max_degradation_s_per_lap,
+        compound_pace_delta_s=pace,
+        compound_degradation_s_per_lap=degradation,
+        compound_stint_target_laps=pit_age,
     )
     return config, payload
