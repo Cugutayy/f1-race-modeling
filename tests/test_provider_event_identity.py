@@ -105,3 +105,14 @@ def test_location_label_difference_is_visible_but_not_fuzzy_repaired():
     assert identity["warnings"] == ["location_label"]
     assert identity["checks"]["location_label"]["required"] is False
     assert identity["policy"]["fuzzy_matching"] is False
+
+
+def test_missing_cancellation_evidence_is_not_treated_as_false():
+    jolpica, openf1, fastf1 = _raw_triplet()
+    openf1 = copy.deepcopy(openf1)
+    openf1["session"].pop("is_cancelled")
+
+    identity = _identity(jolpica, openf1, fastf1)
+    assert identity["verified"] is False
+    assert "not_cancelled" in identity["failures"]
+    assert identity["checks"]["not_cancelled"]["values"]["openf1_session"] is None
