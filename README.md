@@ -16,7 +16,8 @@ The project is deliberately evidence-first: a newer or larger model is only prom
 - **Leakage-strict next-lap model** that excludes historical compound, tyre-age and stint-number joins because historical stint publication timestamps are unavailable.
 - **Transparent Monte Carlo strategy simulator** for live finishing distributions and pit-window counterfactuals.
 - **Empirical simulator priors** for pit loss, Safety Car frequency and pooled DNF hazard from captured historical public data.
-- **Live Streamlit views** for race probabilities, approximate track location, public car telemetry, strategy scenarios and next-lap pace.
+- **Read-only FastAPI gateway** that exposes live state, telemetry, race simulation and strategy scenarios without sending provider/model credentials to the browser.
+- **Vercel-ready Next.js live UI** plus Streamlit research/debug views for race probabilities, approximate track position, public telemetry, strategy and next-lap pace.
 
 ## Data reality
 
@@ -43,6 +44,7 @@ Optional capabilities:
 ```bash
 pip install -e '.[app]'         # Streamlit + Altair
 pip install -e '.[live]'        # OpenF1 MQTT client
+pip install -e '.[api]'         # FastAPI + Uvicorn live gateway
 pip install -e '.[modern]'      # XGBoost / LightGBM / CatBoost
 pip install -e '.[foundation]'  # local TabICLv2 challenger
 pip install -e '.[telemetry]'   # FastF1 / matplotlib
@@ -163,27 +165,45 @@ This pipeline also retains retrospective stint features for ablation/research an
 
 Both pipelines keep whole races separated for model selection, conformal calibration and final testing. Simple `recent_median` and `last_lap` baselines remain visible.
 
-## 5. Live dashboards
+## 5. Live web app and research dashboards
 
-Race probabilities, track positions, public telemetry and pit-window scenarios:
+The production-oriented path is deliberately split: keep OpenF1 capture, model artifacts and Monte Carlo on a persistent Python worker; deploy only the stateless Next.js frontend to Vercel.
+
+Start the read-only worker gateway beside the capture process:
 
 ```bash
+export F1_API_TOKEN='replace-with-a-long-random-secret'
+export F1_LIVE_STATE_PATH="$PWD/reports/local/live/state.json"
+export F1_LIVE_EVENTS_PATH="$PWD/reports/local/live/events.jsonl"
+export F1_STRICT_MODEL_PATH="$PWD/reports/local/lap-strict/next_lap_strict.joblib"
+export F1_STRATEGY_PRIORS_PATH="$PWD/reports/local/lap-strict/strategy_priors.json"
+f1-api
+```
+
+The gateway exposes `/healthz`, `/v1/live`, `/v1/telemetry` and `/v1/strategy`. If the strict artifact is unavailable, the API reports `fallback_recent_laps` instead of inventing an AI prediction.
+
+Run the Vercel-ready frontend locally:
+
+```bash
+cd web
+npm install
+export F1_BACKEND_URL='http://127.0.0.1:8000'
+export F1_BACKEND_TOKEN='replace-with-a-long-random-secret'
+npm run dev
+```
+
+For Vercel, import this repository with **Root Directory = `web`**, use Node 22.x, and set `F1_BACKEND_URL` plus `F1_BACKEND_TOKEN` as server-side environment variables. Do not use a `NEXT_PUBLIC_` token. See [Vercel deployment](docs/VERCEL_DEPLOYMENT.md).
+
+The Next.js screen combines live race distribution, strict next-lap pace, public telemetry and pit-window scenarios from one canonical race state. It marks stale data instead of presenting an old state as live.
+
+The Streamlit views remain useful for local research/debugging:
+
+```bash
+python -m streamlit run app/race_intelligence_dashboard.py
 python -m streamlit run app/live_dashboard.py
-```
-
-Evidence-grade next-lap pace:
-
-```bash
 python -m streamlit run app/strict_pace_dashboard.py
-```
-
-Rich exploratory pace view:
-
-```bash
 python -m streamlit run app/pace_dashboard.py
 ```
-
-The pace dashboards do not invent a prediction if the required local model artifact is missing.
 
 ## 6. Strategy simulation from a captured state
 
@@ -222,8 +242,11 @@ flowchart LR
   RAW --> S[Canonical event-time state]
   S --> LP[Strict next-lap model]
   S --> MC[Race Monte Carlo]
-  LP --> UI[Live dashboards]
-  MC --> UI
+  LP --> API[Read-only FastAPI gateway]
+  MC --> API
+  API --> NX[Next.js / Vercel UI]
+  LP --> ST[Streamlit research UI]
+  MC --> ST
 
   H[Historical OpenF1 races] --> LD[Lap-start dataset]
   LD --> LSEL[Model selection]
@@ -272,11 +295,16 @@ TabICLv2 is the preferred local pretrained challenger because it is sklearn-comp
 python -m ruff check .
 python -m pytest -q
 python -m f1_research demo --output reports/ci-demo
+
+cd web
+npm install
+npm run typecheck
+npm run build
 ```
 
-Tests cover future-label mutation, event-time cutoffs, simultaneous events, model parity, probability coherence, out-of-order live messages, strategy simulation determinism, conformal intervals and strict rejection of retrospective stint-feature leakage.
+Tests cover future-label mutation, event-time cutoffs, simultaneous events, model parity, probability coherence, out-of-order live messages, strategy simulation determinism, conformal intervals, strict rejection of retrospective stint-feature leakage, API authentication/fallback behavior and telemetry-tail filtering.
 
-Normal CI is offline. `.github/workflows/openf1-smoke.yml` is a manual network smoke test that downloads one completed OpenF1 race, records source hashes and verifies that the event-time dataset can still be built against the current API.
+Normal CI is offline. `Research checks` validates the Python stack and `Web checks` validates the Next.js production build. `.github/workflows/openf1-smoke.yml` is a manual network smoke test that downloads one completed OpenF1 race, records source hashes and verifies that the event-time dataset can still be built against the current API.
 
 ## Status
 
