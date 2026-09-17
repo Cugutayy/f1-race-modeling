@@ -1,7 +1,6 @@
 import json
 
 import pandas as pd
-import pytest
 from sklearn.dummy import DummyRegressor
 
 from f1_research.features import FEATURES
