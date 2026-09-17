@@ -1,4 +1,5 @@
 name: Real provider matrix audit
+# Evidence rerun: missing classified provider fields are explicit gaps, not contradictions.
 on:
   workflow_dispatch:
   push:
