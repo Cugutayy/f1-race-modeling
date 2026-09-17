@@ -176,13 +176,21 @@ def validate_simulation_observations(snapshot: dict[str, Any]) -> dict[str, list
             # Classification is observed, but exact-time simulation deliberately excludes
             # this row until a seconds gap becomes available again.
             gap_value = None
-        else:
-            if gap_value is None:
-                fields.append("gap_or_lap_deficit")
+        elif gap_value is None:
+            # No lap-deficit evidence exists for this row, so a missing seconds gap is
+            # an incomplete exact-time observation rather than a license to fabricate it.
+            fields.append("gap_to_leader_s")
 
-        exact_time_eligible = position == 1 or (laps_behind is None and gap_value is not None)
+        requires_exact_time_inputs = laps_behind is None
+        exact_time_eligible = requires_exact_time_inputs and gap_value is not None
         if exact_time_eligible:
             simulation_eligible += 1
+
+        # A non-lapped row belongs to the exact-time model domain even when one required
+        # field (for example the seconds gap) is missing. Report all missing inputs so the
+        # trusted-live API fails closed with a complete diagnostic. Lap-down rows are the
+        # only rows allowed to omit pace/tyre inputs because they are classification-only.
+        if requires_exact_time_inputs:
             if not _finite_positive_laps(row):
                 fields.append("pace_observation")
 
@@ -283,7 +291,9 @@ def assert_trusted_live_state(
         for row in rows
         if isinstance(row, dict) and _exact_positive_int(row.get("position")) is not None
     ]
-    classification_only = sum(_exact_positive_int(row.get("laps_behind")) is not None for row in positioned)
+    classification_only = sum(
+        _exact_positive_int(row.get("laps_behind")) is not None for row in positioned
+    )
     eligible = len(positioned) - classification_only
     return LiveTruthAudit(
         status="trusted_live",
