@@ -35,12 +35,7 @@ DEFAULT_TOPICS = (
 
 
 def _provider_time_key(row: dict[str, Any]) -> tuple[int, Any]:
-    """Deterministic provider ordering used by REST capture and replay provenance.
-
-    OpenF1's dated rows are sorted chronologically. Missing or malformed timestamps
-    are kept after dated rows and retain deterministic lexical/stable ordering rather
-    than depending on ``datetime.now()`` during a sort key calculation.
-    """
+    """Deterministic provider ordering used by REST capture and replay provenance."""
     raw = row.get("date") or row.get("date_start")
     if raw is None:
         return 1, ""
@@ -116,12 +111,7 @@ class OpenF1Client:
 
 
 class CaptureWriter:
-    """Append immutable raw messages and atomically publish the latest state.
-
-    The capture hash is maintained incrementally. An existing capture is scanned once
-    when the writer opens, then each appended UTF-8 JSONL record updates the hash in
-    O(record_size). Publishing never rereads the growing capture file.
-    """
+    """Append immutable raw messages and atomically publish state + capture health."""
 
     def __init__(self, output: Path):
         self.output = Path(output)
@@ -132,41 +122,95 @@ class CaptureWriter:
         self._raw_hasher = hashlib.sha256()
         self.raw_bytes = 0
         self.count = 0
+        self.last_published_count = 0
+        self.process_started_at = datetime.now(UTC).isoformat()
+        self.stream_status: dict[str, Any] = {
+            "connection_state": "bootstrap",
+            "connect_count": 0,
+            "disconnect_count": 0,
+            "last_connect_at": None,
+            "last_disconnect_at": None,
+            "last_message_at": None,
+            "last_error": None,
+        }
         if self.raw_path.exists():
             with self.raw_path.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     self._raw_hasher.update(chunk)
                     self.raw_bytes += len(chunk)
                     self.count += chunk.count(b"\n")
+        self.last_published_count = self.count
+
+    def mark_stream(
+        self,
+        state: str,
+        *,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> None:
+        at = (at or datetime.now(UTC)).astimezone(UTC)
+        self.stream_status["connection_state"] = state
+        if state == "connected":
+            self.stream_status["connect_count"] += 1
+            self.stream_status["last_connect_at"] = at.isoformat()
+            self.stream_status["last_error"] = None
+        elif state in {"disconnected", "reconnecting", "connect_error"}:
+            self.stream_status["disconnect_count"] += 1
+            self.stream_status["last_disconnect_at"] = at.isoformat()
+        if error:
+            self.stream_status["last_error"] = str(error)
+
+    def append_many(
+        self,
+        topic: str,
+        payloads: list[dict[str, Any]],
+        received_at: datetime,
+    ) -> int:
+        if not payloads:
+            return 0
+        stamp = received_at.astimezone(UTC).isoformat()
+        encoded_rows = []
+        for payload in payloads:
+            row = {"topic": topic, "received_at": stamp, "payload": payload}
+            encoded_rows.append(
+                (json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+            )
+        block = b"".join(encoded_rows)
+        with self.raw_path.open("ab") as handle:
+            handle.write(block)
+        self._raw_hasher.update(block)
+        self.raw_bytes += len(block)
+        self.count += len(encoded_rows)
+        self.stream_status["last_message_at"] = stamp
+        return len(encoded_rows)
 
     def append(self, topic: str, payload: dict[str, Any], received_at: datetime) -> None:
-        row = {
-            "topic": topic,
-            "received_at": received_at.astimezone(UTC).isoformat(),
-            "payload": payload,
-        }
-        encoded = (json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
-        with self.raw_path.open("ab") as handle:
-            handle.write(encoded)
-        self._raw_hasher.update(encoded)
-        self.raw_bytes += len(encoded)
-        self.count += 1
+        self.append_many(topic, [payload], received_at)
+
+    def should_publish(self, publish_every: int) -> bool:
+        return self.count - self.last_published_count >= max(1, publish_every)
 
     def publish(self, snapshot: dict[str, Any]) -> None:
         raw = json.dumps(snapshot, indent=2, allow_nan=False).encode()
-        temp = self.state_path.with_suffix(".tmp")
-        temp.write_bytes(raw)
-        temp.replace(self.state_path)
+        state_temp = self.state_path.with_suffix(".tmp")
+        state_temp.write_bytes(raw)
+        state_temp.replace(self.state_path)
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "provider": "OpenF1",
+            "process_started_at": self.process_started_at,
             "captured_rows": self.count,
             "capture_bytes": self.raw_bytes,
             "events_sha256": self._raw_hasher.copy().hexdigest(),
             "state_sha256": hashlib.sha256(raw).hexdigest(),
+            "stream": dict(self.stream_status),
             "updated_at": datetime.now(UTC).isoformat(),
         }
-        self.manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        manifest_raw = json.dumps(manifest, indent=2).encode("utf-8")
+        manifest_temp = self.manifest_path.with_suffix(".tmp")
+        manifest_temp.write_bytes(manifest_raw)
+        manifest_temp.replace(self.manifest_path)
+        self.last_published_count = self.count
 
 
 def bootstrap(
@@ -175,13 +219,7 @@ def bootstrap(
     writer: CaptureWriter,
     session_key: int | str = "latest",
 ) -> dict[str, Any]:
-    """REST bootstrap using one canonical order for raw capture and state mutation.
-
-    Car/location history is intentionally not bulk-downloaded. Every row is written
-    and ingested in the same deterministic event-time order and with the same
-    ``received_at`` timestamp, so replaying ``events.jsonl`` reconstructs the same
-    semantic state instead of depending on provider response ordering.
-    """
+    """REST bootstrap using one canonical order for raw capture and state mutation."""
     topics = (
         "sessions", "drivers", "position", "intervals", "laps", "stints", "pit",
         "weather", "race_control",
@@ -225,7 +263,7 @@ def stream(
     topics: tuple[str, ...] = DEFAULT_TOPICS,
     publish_every: int = 25,
 ) -> None:
-    """Subscribe to OpenF1 MQTT. Requires provider live entitlement and paho-mqtt."""
+    """Subscribe to OpenF1 MQTT with reconnect visibility in the capture manifest."""
     if not client.token:
         raise RuntimeError("Live streaming requires OPENF1_TOKEN or OPENF1_USERNAME/OPENF1_PASSWORD")
     try:
@@ -243,10 +281,25 @@ def stream(
     signal.signal(signal.SIGTERM, stop)
 
     def on_connect(mqtt_client, _userdata, _flags, reason_code, _properties=None):
+        nonlocal stopped
+        received = datetime.now(UTC)
         if int(reason_code) != 0:
-            raise RuntimeError(f"OpenF1 MQTT connection failed: {reason_code}")
+            writer.mark_stream("connect_error", at=received, error=f"reason_code={reason_code}")
+            writer.publish(store.snapshot(received))
+            stopped = True
+            return
+        writer.mark_stream("connected", at=received)
         for name in topics:
             mqtt_client.subscribe(f"v1/{name}", qos=0)
+        writer.publish(store.snapshot(received))
+
+    def on_disconnect(_mqtt_client, _userdata, _disconnect_flags, reason_code, _properties=None):
+        received = datetime.now(UTC)
+        if stopped:
+            writer.mark_stream("disconnected", at=received)
+        else:
+            writer.mark_stream("reconnecting", at=received, error=f"reason_code={reason_code}")
+        writer.publish(store.snapshot(received))
 
     def on_message(_mqtt_client, _userdata, message):
         received = datetime.now(UTC)
@@ -254,21 +307,24 @@ def stream(
             decoded = json.loads(message.payload.decode("utf-8"))
             rows = decoded if isinstance(decoded, list) else [decoded]
             topic = message.topic.rsplit("/", 1)[-1]
-            for payload in rows:
-                if not isinstance(payload, dict):
-                    continue
-                writer.append(topic, payload, received)
+            valid_rows = [payload for payload in rows if isinstance(payload, dict)]
+            writer.append_many(topic, valid_rows, received)
+            for payload in valid_rows:
                 store.ingest(topic, payload, received)
-            if writer.count % max(1, publish_every) == 0:
+            if writer.should_publish(publish_every):
                 writer.publish(store.snapshot(received))
-        except (UnicodeError, json.JSONDecodeError, ValueError):
-            # Malformed provider messages never mutate canonical state.
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            writer.stream_status["last_error"] = f"message_decode: {exc}"
             return
 
+    writer.mark_stream("connecting")
+    writer.publish(store.snapshot())
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     mqtt_client.username_pw_set(os.environ.get("OPENF1_USERNAME", "token"), client.token)
     mqtt_client.tls_set()
+    mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
     mqtt_client.on_connect = on_connect
+    mqtt_client.on_disconnect = on_disconnect
     mqtt_client.on_message = on_message
     mqtt_client.connect(MQTT_HOST, MQTT_PORT, keepalive=45)
     mqtt_client.loop_start()
@@ -278,6 +334,8 @@ def stream(
     finally:
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
+        if writer.stream_status["connection_state"] != "connect_error":
+            writer.mark_stream("stopped")
         writer.publish(store.snapshot())
 
 
