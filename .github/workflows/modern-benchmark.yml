@@ -12,6 +12,7 @@ on:
       - 'src/f1_research/plackett_luce.py'
       - 'src/f1_research/rank_ensemble.py'
       - 'src/f1_research/evaluation_v2.py'
+      - 'src/f1_research/benchmark_evidence.py'
       - 'pyproject.toml'
       - '.github/workflows/modern-benchmark.yml'
 
@@ -52,8 +53,21 @@ jobs:
             --min-fit-events 20 \
             --models hist_gradient_boosting extra_trees xgboost lightgbm catboost \
             --max-specs-per-model 2
+      - name: Add whole-event bootstrap uncertainty
+        run: |
+          python -m f1_research.benchmark_evidence \
+            --metrics reports/modern/benchmark/fold_metrics.csv \
+            --output reports/modern/benchmark/evidence \
+            --samples 10000
       - name: Print sealed summary
-        run: cat reports/modern/benchmark/summary.csv
+        run: |
+          cat reports/modern/benchmark/summary.csv
+          echo '--- paired winner log loss ---'
+          python - <<'PY'
+          import pandas as pd
+          evidence = pd.read_csv('reports/modern/benchmark/evidence/paired_comparisons.csv')
+          print(evidence[evidence.metric.eq('winner_log_loss')].to_string(index=False))
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: modern-historical-benchmark-${{ github.sha }}
