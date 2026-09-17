@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .model_registry import load_manifest
+from .replay import load_jsonl, replay
 
 
 def _check_data_truth(path: Path) -> tuple[bool, str]:
@@ -31,7 +32,7 @@ def _check_benchmark(path: Path) -> tuple[bool, str]:
     return True, f"{report['test_events']} held-out events"
 
 
-def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path) -> dict[str, Any]:
+def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path, replay_capture: Path | None = None) -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {}
     for name, fn, path in (
         ("data_truth", _check_data_truth, data_truth),
@@ -47,6 +48,12 @@ def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path
         checks["model_integrity"] = {"passed": True, "detail": loaded.model_id}
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         checks["model_integrity"] = {"passed": False, "detail": f"{type(exc).__name__}: {exc}"}
+    if replay_capture is not None:
+        try:
+            result = replay(load_jsonl(replay_capture), snapshot_every=100)
+            checks["replay"] = {"passed": result["accepted_count"] > 0, "detail": f"{result[\'accepted_count\']}/{result[\'event_count\']} accepted"}
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            checks["replay"] = {"passed": False, "detail": f"{type(exc).__name__}: {exc}"}
     passed = all(item["passed"] for item in checks.values())
     return {"schema_version": 1, "production_ready": passed, "checks": checks}
 
@@ -57,10 +64,11 @@ def main(argv=None) -> int:
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--replay-capture", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     result = run_checks(data_truth=args.data_truth, benchmark=args.benchmark,
-                        manifest=args.manifest, model=args.model)
+                        manifest=args.manifest, model=args.model, replay_capture=args.replay_capture)
     rendered = json.dumps(result, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
