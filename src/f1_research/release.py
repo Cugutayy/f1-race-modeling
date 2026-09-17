@@ -73,12 +73,9 @@ def build_release(
         "temperatures": audit["temperatures"],
         "selected_model": f"modern::{spec.name}",
     }
-    calibration_raw = json.dumps(
-        calibration_payload, sort_keys=True, separators=(",", ":")
-    ).encode()
     calibration_path = output / "calibration.json"
     calibration_path.write_text(json.dumps(calibration_payload, indent=2), encoding="utf-8")
-    calibration_sha = _sha256_bytes(calibration_raw)
+    calibration_sha = sha256_file(calibration_path)
     trained_until = pd.to_datetime(train["date"], utc=True).max().isoformat()
     manifest = ModelManifest(
         schema_version=1,
