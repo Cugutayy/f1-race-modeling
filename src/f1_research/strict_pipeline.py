@@ -14,6 +14,7 @@ import joblib
 from .lap_intelligence import LapModelSpec
 from .lap_pipeline import collect_recent
 from .lap_strict import STRICT_FEATURES, fit_strict_mixture
+from .strategy_calibration import calibrate_strategy_priors, save_strategy_priors
 
 
 def _specs(include_foundation: bool) -> tuple[LapModelSpec, ...]:
@@ -55,26 +56,39 @@ def run(
     metrics_path = output / "strict_summary.csv"
     metrics.to_csv(metrics_path, index=False)
 
+    session_keys = [int(item["session_key"]) for item in manifests]
+    priors, prior_audit = calibrate_strategy_priors(datasets, output / "raw", session_keys)
+    priors_path = output / "strategy_priors.json"
+    priors_payload = save_strategy_priors(priors, prior_audit, priors_path)
+
     result = {
         "schema_version": 3,
         "task": "next_lap_strict_mixture",
         "created_at": datetime.now(UTC).isoformat(),
         "year": year,
-        "sessions": [int(item["session_key"]) for item in manifests],
+        "sessions": session_keys,
         "selected_regressor": artifact["selected_regressor"],
         "feature_policy": "strict_asof_only",
         "features": STRICT_FEATURES,
         "metrics": metrics.to_dict("records"),
         "audit": audit,
-        "artifact": {
-            "path": str(artifact_path),
-            "sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+        "strategy_priors": priors_payload,
+        "artifacts": {
+            "next_lap_strict": {
+                "path": str(artifact_path),
+                "sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            },
+            "strategy_priors": {
+                "path": str(priors_path),
+                "sha256": hashlib.sha256(priors_path.read_bytes()).hexdigest(),
+            },
         },
         "limitations": [
             "Historical OpenF1 is a retrospective source snapshot; provider publication latency is simulated.",
             "Compound, tyre age and stint number are excluded because historical stint publication time is unavailable.",
             "Public timing data is not equivalent to team fuel, setup, tyre-temperature or full sensor data.",
             "Foundation models are challengers and are selected only when validation MAE wins.",
+            "Strategy priors are pooled public-data estimates, not team-specific engineering forecasts.",
         ],
     }
     report_path = output / "strict_report.json"
@@ -103,7 +117,8 @@ def main(argv=None):
         "selected_regressor": report["selected_regressor"],
         "sessions": report["sessions"],
         "metrics": report["metrics"],
-        "artifact": report["artifact"],
+        "artifacts": report["artifacts"],
+        "strategy_priors": report["strategy_priors"]["priors"],
     }, indent=2))
 
 
