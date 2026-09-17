@@ -2,6 +2,9 @@ import json
 
 import pandas as pd
 import pytest
+from sklearn.dummy import DummyRegressor
+
+from f1_research.features import FEATURES
 
 from f1_research import release as rel
 from f1_research.model_registry import load_manifest
@@ -24,10 +27,9 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
             })
     frame = pd.DataFrame(rows)
 
-    class Dummy:
-        def predict(self, X):
-            return pd.to_numeric(X["quali_position"]).to_numpy(dtype=float)
-    monkeypatch.setattr(rel, "fit_selected", lambda train, spec: Dummy())
+    def fake_fit(train, spec):
+        return DummyRegressor(strategy="mean").fit(train[FEATURES], [0.5] * len(train))
+    monkeypatch.setattr(rel, "fit_selected", fake_fit)
     monkeypatch.setattr(rel, "benchmark_v2", lambda clean, **kwargs: (
         pd.DataFrame([{"event_id": "E7", "model": "modern::extra_trees",
                        "position_mae": 0.0, "winner_log_loss": 0.1,
