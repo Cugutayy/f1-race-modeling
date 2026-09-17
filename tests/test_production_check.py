@@ -11,7 +11,7 @@ def _sha(raw):
 
 def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     truth = tmp_path / "truth.json"
-    truth.write_text(json.dumps({"schema_version": 1, "events": [
+    truth.write_text(json.dumps({"matrix_schema_version": 1, "events": [
         {"verification_status": status}
     ]}))
     benchmark = tmp_path / "benchmark.json"
