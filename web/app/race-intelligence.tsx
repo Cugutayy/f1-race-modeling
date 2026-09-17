@@ -75,6 +75,13 @@ type LiveReport = {
   audit?: Record<string, unknown>;
 };
 
+type LocationSample = {
+  date?: string | null;
+  driver_number: number;
+  x: number;
+  y: number;
+};
+
 type TelemetrySample = {
   date?: string | null;
   speed_kmh?: number | null;
@@ -147,32 +154,33 @@ function Sparkline({ values }: { values: Array<number | null | undefined> }) {
   );
 }
 
-function TrackMap({ drivers }: { drivers: Driver[] }) {
-  const points = drivers.filter((driver) => asNumber(driver.x) !== null && asNumber(driver.y) !== null);
-  if (!points.length) return <div className="empty-state">Waiting for OpenF1 location samples.</div>;
-  const xs = points.map((driver) => driver.x as number);
-  const ys = points.map((driver) => driver.y as number);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const spanX = Math.max(maxX - minX, 1);
-  const spanY = Math.max(maxY - minY, 1);
-  const project = (driver: Driver) => ({
-    x: 7 + (((driver.x as number) - minX) / spanX) * 86,
-    y: 93 - (((driver.y as number) - minY) / spanY) * 86,
+function TrackMap({ drivers, samples }: { drivers: Driver[]; samples: LocationSample[] }) {
+  const usable = samples.filter((row) => Number.isFinite(row.x) && Number.isFinite(row.y));
+  const current = drivers.filter((driver) => asNumber(driver.x) !== null && asNumber(driver.y) !== null);
+  if (!usable.length && !current.length) return <div className="empty-state">Waiting for OpenF1 location samples.</div>;
+
+  const groups = new Map<number, LocationSample[]>();
+  for (const row of usable) groups.set(row.driver_number, [...(groups.get(row.driver_number) || []), row]);
+  const reference = [...groups.values()].sort((a, b) => b.length - a.length)[0] || [];
+  const all = reference.length ? reference : current.map((d) => ({ driver_number: d.driver_number, x: d.x as number, y: d.y as number }));
+  const xs = all.map((row) => row.x);
+  const ys = all.map((row) => row.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const spanX = Math.max(maxX - minX, 1), spanY = Math.max(maxY - minY, 1);
+  const project = (x: number, y: number) => ({
+    x: 7 + ((x - minX) / spanX) * 86,
+    y: 93 - ((y - minY) / spanY) * 86,
   });
-  const sorted = [...points].sort((a, b) => (a.position ?? 999) - (b.position ?? 999));
-  const path = sorted.map((driver, index) => {
-    const p = project(driver);
+  const trail = reference.map((row, index) => {
+    const p = project(row.x, row.y);
     return `${index === 0 ? "M" : "L"}${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
   }).join(" ");
   return (
     <div className="track-shell">
       <svg viewBox="0 0 100 100" className="track-map" role="img" aria-label="Approximate live track positions">
-        <path d={path} className="track-ghost" />
-        {points.map((driver) => {
-          const p = project(driver);
+        {trail && <path d={trail} className="track-ghost" />}
+        {current.map((driver) => {
+          const p = project(driver.x as number, driver.y as number);
           return (
             <g key={driver.driver_number} transform={`translate(${p.x} ${p.y})`}>
               <circle r="2.2" className="car-dot" />
@@ -181,7 +189,7 @@ function TrackMap({ drivers }: { drivers: Driver[] }) {
           );
         })}
       </svg>
-      <p className="footnote">Approximate public x/y position; not precision GPS or racing-line reconstruction.</p>
+      <p className="footnote">Circuit trace is reconstructed from one car&apos;s captured public OpenF1 x/y trail; markers are latest public positions, not precision GPS.</p>
     </div>
   );
 }
@@ -194,6 +202,7 @@ export default function RaceIntelligence() {
   const [error, setError] = useState<string | null>(null);
   const [selectedDriver, setSelectedDriver] = useState<number | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetrySample[]>([]);
+  const [locations, setLocations] = useState<LocationSample[]>([]);
   const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<StrategyReport | null>(null);
   const [strategyLoading, setStrategyLoading] = useState(false);
@@ -281,6 +290,22 @@ export default function RaceIntelligence() {
       if (timer) clearTimeout(timer);
     };
   }, [selectedDriver]);
+
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pollLocations = async () => {
+      try {
+        const response = await fetch("/api/locations?limit=8000", { cache: "no-store" });
+        const payload = await response.json();
+        if (response.ok && active) setLocations(Array.isArray(payload?.samples) ? payload.samples : []);
+      } finally {
+        if (active) timer = setTimeout(pollLocations, 5000);
+      }
+    };
+    void pollLocations();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, []);
 
   const predictionByDriver = useMemo(
     () => new Map((report?.predictions || []).map((row) => [row.driver_number, row])),
@@ -452,7 +477,7 @@ export default function RaceIntelligence() {
       {tab === "track" && (
         <section className="panel">
           <div className="panel-head"><div><span className="kicker">OPENF1 LOCATION</span><h2>Live field map</h2></div><span className="panel-note">relative public x/y samples</span></div>
-          <TrackMap drivers={drivers} />
+          <TrackMap drivers={drivers} samples={locations} />
         </section>
       )}
 
