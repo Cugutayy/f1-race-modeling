@@ -67,6 +67,73 @@ def _preprocess(scale: bool = False) -> ColumnTransformer:
     return ColumnTransformer([("numeric", numeric, NUMERIC), ("category", categorical, CATEGORICAL)])
 
 
+class _CatBoostNativeRegressor:
+    """Small adapter that preserves CatBoost's native categorical feature handling.
+
+    Other tree challengers receive ordinal-encoded categories because their sklearn
+    interfaces expect numeric matrices. CatBoost should not: its ordered target/stat
+    machinery is specifically designed to consume categorical columns directly. This
+    adapter therefore performs only leakage-safe numeric median imputation and string
+    normalization for categorical values, then passes the original feature names to
+    CatBoost via ``cat_features``.
+    """
+
+    def __init__(self, params: dict[str, Any] | None = None, random_state: int = 42):
+        self.params = dict(params or {})
+        self.random_state = int(random_state)
+        self.numeric_fill_: dict[str, float] | None = None
+        self.model_: Any | None = None
+
+    def _prepare(self, frame: pd.DataFrame, *, fit: bool) -> pd.DataFrame:
+        if not isinstance(frame, pd.DataFrame):
+            raise ValueError("CatBoost native adapter requires a pandas DataFrame")
+        missing = [name for name in FEATURES if name not in frame]
+        if missing:
+            raise ValueError(f"Missing CatBoost features: {missing}")
+        output = frame[FEATURES].copy()
+        numeric = output[NUMERIC].apply(pd.to_numeric, errors="coerce")
+        if fit:
+            medians = numeric.median(axis=0, skipna=True).fillna(0.0)
+            self.numeric_fill_ = {name: float(medians[name]) for name in NUMERIC}
+        if self.numeric_fill_ is None:
+            raise RuntimeError("CatBoost adapter must be fitted before prediction")
+        for name in NUMERIC:
+            output[name] = numeric[name].fillna(self.numeric_fill_[name]).astype(float)
+        for name in CATEGORICAL:
+            # CatBoost categorical values cannot contain float NaN. StringDtype keeps
+            # missing values explicit before conversion and also preserves unseen
+            # categories at prediction time instead of mapping them to an arbitrary id.
+            output[name] = output[name].astype("string").fillna("__MISSING__").astype(str)
+        return output
+
+    def fit(self, frame: pd.DataFrame, target: Any) -> "_CatBoostNativeRegressor":
+        try:
+            from catboost import CatBoostRegressor
+        except ImportError as exc:
+            raise RuntimeError("catboost is not installed; install .[modern]") from exc
+        settings = _with_overrides({
+            "loss_function": "MAE",
+            "iterations": 500,
+            "depth": 5,
+            "learning_rate": 0.03,
+            "l2_leaf_reg": 5.0,
+            "verbose": False,
+            "allow_writing_files": False,
+            "random_seed": self.random_state,
+            "cat_features": list(CATEGORICAL),
+        }, self.params)
+        prepared = self._prepare(frame, fit=True)
+        self.model_ = CatBoostRegressor(**settings)
+        self.model_.fit(prepared, target)
+        return self
+
+    def predict(self, frame: pd.DataFrame) -> np.ndarray:
+        if self.model_ is None:
+            raise RuntimeError("CatBoost adapter must be fitted before prediction")
+        prepared = self._prepare(frame, fit=False)
+        return np.asarray(self.model_.predict(prepared), dtype=float)
+
+
 def available_candidates() -> dict[str, bool]:
     result = {"hist_gradient_boosting": True, "extra_trees": True}
     for name, module in (("xgboost", "xgboost"), ("lightgbm", "lightgbm"),
@@ -85,8 +152,12 @@ def _with_overrides(defaults: dict[str, Any], params: dict[str, Any]) -> dict[st
     return merged
 
 
-def build_estimator(spec: CandidateSpec, random_state: int = 42) -> Pipeline:
+def build_estimator(spec: CandidateSpec, random_state: int = 42) -> Any:
     name, params = spec.name, dict(spec.params)
+    if name == "catboost":
+        # Keep CatBoost on the raw named DataFrame so it can use native categorical
+        # statistics. OrdinalEncoder is deliberately bypassed for this challenger.
+        return _CatBoostNativeRegressor(params, random_state)
     if name == "hist_gradient_boosting":
         settings = _with_overrides({
             "loss": "absolute_error", "random_state": random_state, "early_stopping": True,
@@ -122,16 +193,6 @@ def build_estimator(spec: CandidateSpec, random_state: int = 42) -> Pipeline:
             "verbosity": -1, "random_state": random_state,
         }, params)
         learner = LGBMRegressor(**settings)
-    elif name == "catboost":
-        try:
-            from catboost import CatBoostRegressor
-        except ImportError as exc:
-            raise RuntimeError("catboost is not installed; install .[modern]") from exc
-        settings = _with_overrides({
-            "loss_function": "MAE", "iterations": 500, "depth": 5, "learning_rate": 0.03,
-            "l2_leaf_reg": 5.0, "verbose": False, "random_seed": random_state,
-        }, params)
-        learner = CatBoostRegressor(**settings)
     elif name == "tabicl_v2":
         try:
             from tabicl import TabICLRegressor
@@ -338,7 +399,7 @@ def jsonable_params(params: dict[str, Any]) -> str:
     return ", ".join(f"{key}={params[key]}" for key in sorted(params)) or "default"
 
 
-def fit_selected(frame: pd.DataFrame, spec: CandidateSpec) -> Pipeline:
+def fit_selected(frame: pd.DataFrame, spec: CandidateSpec) -> Any:
     model = build_estimator(spec)
     model.fit(frame[FEATURES], normalized_rank_target(frame))
     return model
