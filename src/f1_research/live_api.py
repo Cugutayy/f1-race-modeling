@@ -428,8 +428,8 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
 @app.websocket("/v1/ws")
 async def live_socket(websocket: WebSocket) -> None:
     expected = os.environ.get("F1_API_TOKEN")
-    supplied = websocket.query_params.get("token")
-    if expected and supplied != expected:
+    supplied = websocket.headers.get("authorization")
+    if expected and supplied != f"Bearer {expected}":
         await websocket.close(code=4401)
         return
     await websocket.accept()
