@@ -282,6 +282,40 @@ def _telemetry(driver_number: int, limit: int) -> list[dict[str, Any]]:
     return _safe(output)
 
 
+
+def _locations(limit: int) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for line in reversed(_tail_lines(_events_path(), max_bytes=12 * 1024 * 1024)):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        topic = str(item.get("topic") or "").removeprefix("v1/")
+        if topic != "location":
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        try:
+            number = int(payload.get("driver_number"))
+            x = float(payload.get("x"))
+            y = float(payload.get("y"))
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(x) or not np.isfinite(y):
+            continue
+        output.append({
+            "date": payload.get("date") or item.get("received_at"),
+            "driver_number": number,
+            "x": x,
+            "y": y,
+        })
+        if len(output) >= limit:
+            break
+    output.reverse()
+    return _safe(output)
+
+
 def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     state = _read_state()
     truth_audit = _trusted_live_audit(state)
@@ -420,6 +454,15 @@ def telemetry(
         "driver_number": driver_number,
         "samples": _telemetry(driver_number, limit),
     })
+
+
+
+@app.get("/v1/locations")
+def locations(
+    limit: int = Query(default=5000, ge=100, le=20000),
+    _: None = Depends(_authorize),
+) -> JSONResponse:
+    return JSONResponse({"samples": _locations(limit)})
 
 
 @app.get("/v1/strategy")
