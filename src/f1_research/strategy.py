@@ -365,15 +365,17 @@ def simulate(
         pit_offsets.append(pit_offset)
         next_compounds.append(next_compound)
 
-    # Draw the complete pit-loss random field before scenario-dependent decisions.
-    # This keeps downstream RNG consumption aligned across counterfactual pit timings,
-    # which is required for genuine common-random-number comparisons.
-    pit_loss_draws = np.maximum(
+    # Draw one latent pit-loss shock per sample/driver before scenario-dependent
+    # decisions. Reusing the same shock at every candidate pit offset is the actual
+    # common-random-number contract: changing pit timing must not also change the
+    # sampled stationary/lane-loss shock. Timing can still change whether the same
+    # base shock receives the Safety-Car multiplier.
+    pit_loss_base = np.maximum(
         8.0,
         rng.normal(
             config.pit_loss_mean_s,
             config.pit_loss_sd_s,
-            size=(laps_remaining, n, m),
+            size=(n, m),
         ),
     )
 
@@ -382,7 +384,7 @@ def simulate(
     for j, pit_offset in enumerate(pit_offsets):
         if pit_offset != 0:
             continue
-        total[:, j] += pit_loss_draws[0, :, j]
+        total[:, j] += pit_loss_base[:, j]
         compounds[j] = next_compounds[j]
         pit_done[j] = True
         ages[j] = 0.0
@@ -419,7 +421,7 @@ def simulate(
         for j, pit_offset in enumerate(pit_offsets):
             if pit_offset is None or pit_done[j] or lap != pit_offset:
                 continue
-            pit_loss = pit_loss_draws[lap, :, j].copy()
+            pit_loss = pit_loss_base[:, j].copy()
             pit_loss[sc_now] *= config.safety_car_pit_loss_multiplier
             total[:, j] += pit_loss
             compounds[j] = next_compounds[j]
@@ -476,8 +478,9 @@ def simulate(
             "0=pit immediately before first future lap; N>0=run N future laps then pit"
         ),
         "common_random_numbers": (
-            "pit-loss draws are pre-sampled for every future offset/driver so "
-            "counterfactual timing does not shift downstream RNG streams"
+            "one latent pit-loss draw is pre-sampled per sample/driver and reused "
+            "across candidate offsets; timing therefore does not change the pit-loss "
+            "shock or downstream RNG streams"
         ),
         "status": "research simulation; not calibrated team strategy software",
     }
