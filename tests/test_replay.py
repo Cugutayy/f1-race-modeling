@@ -15,6 +15,7 @@ def test_replay_orders_events_and_rejects_stale_provider_revision():
     result = replay(events, session_key=1)
     assert result["event_count"] == 2
     assert result["accepted_count"] == 1
+    assert result["topic_counts"] == {"position": 2}
     assert result["final_state"]["drivers"][0]["position"] == 1
     assert result["final_state"]["rejected_provider_order_messages"] == 1
 
