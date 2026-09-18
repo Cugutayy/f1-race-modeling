@@ -102,13 +102,23 @@ def gateway_files(tmp_path, monkeypatch):
     monkeypatch.setenv("F1_MAX_LIVE_AGE_S", "20")
     monkeypatch.setenv("F1_REQUIRE_LIVE_STREAM", "1")
     monkeypatch.delenv("F1_API_TOKEN", raising=False)
+    monkeypatch.delenv("F1_ALLOW_UNAUTHENTICATED_API", raising=False)
+    monkeypatch.delenv("F1_ALLOW_DEFAULT_PRIORS", raising=False)
+    monkeypatch.delenv("F1_ALLOW_PACE_FALLBACK", raising=False)
     live_api._artifact_cache["key"] = None
     live_api._artifact_cache["value"] = None
     return state_path, events_path, manifest_path
 
 
-def test_gateway_authorization_is_optional_but_enforced_when_configured(monkeypatch):
+def test_gateway_authorization_fails_closed_unless_explicitly_overridden(monkeypatch):
     monkeypatch.delenv("F1_API_TOKEN", raising=False)
+    monkeypatch.delenv("F1_ALLOW_UNAUTHENTICATED_API", raising=False)
+    with pytest.raises(HTTPException) as missing:
+        live_api._authorize(None)
+    assert missing.value.status_code == 503
+    assert "not configured" in str(missing.value.detail)
+
+    monkeypatch.setenv("F1_ALLOW_UNAUTHENTICATED_API", "1")
     assert live_api._authorize(None) is None
 
     monkeypatch.setenv("F1_API_TOKEN", "secret-token")
@@ -118,7 +128,11 @@ def test_gateway_authorization_is_optional_but_enforced_when_configured(monkeypa
     assert live_api._authorize("Bearer secret-token") is None
 
 
-def test_live_report_has_coherent_fallback_probabilities(gateway_files):
+def test_live_report_has_coherent_fallback_probabilities_only_with_research_overrides(
+    gateway_files, monkeypatch
+):
+    monkeypatch.setenv("F1_ALLOW_DEFAULT_PRIORS", "1")
+    monkeypatch.setenv("F1_ALLOW_PACE_FALLBACK", "1")
     report = live_api._live_report(total_laps=12, samples=1000)
     assert report["pace_status"] == "fallback_recent_laps"
     assert report["pace_model"]["status"] == "fallback_recent_laps"
@@ -130,6 +144,26 @@ def test_live_report_has_coherent_fallback_probabilities(gateway_files):
     assert sum(row["podium_probability"] for row in predictions) == pytest.approx(3.0)
     assert report["strategy_prior_source"]["source"] == "built_in_defaults"
 
+
+
+
+def test_live_report_rejects_missing_calibrated_priors_by_default(gateway_files):
+    with pytest.raises(HTTPException) as exc:
+        live_api._live_report(total_laps=12, samples=1000)
+    assert exc.value.status_code == 503
+    assert "strategy priors" in str(exc.value.detail).lower()
+
+
+def test_live_report_rejects_missing_strict_model_by_default(gateway_files, monkeypatch):
+    monkeypatch.setattr(
+        live_api,
+        "_simulation_config",
+        lambda samples: (live_api.SimulationConfig(samples=samples), {"source": "fixture"}),
+    )
+    with pytest.raises(HTTPException) as exc:
+        live_api._live_report(total_laps=12, samples=1000)
+    assert exc.value.status_code == 503
+    assert "strict live pace model" in str(exc.value.detail).lower()
 
 def test_live_report_rejects_stale_provider_event_even_when_file_is_fresh(gateway_files):
     state_path = gateway_files[0]
