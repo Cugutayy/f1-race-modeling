@@ -53,21 +53,25 @@ def attach_regime_labels(dataset: pd.DataFrame, lap_rows: list[dict[str, Any]],
     laps = pd.DataFrame(lap_rows)
     if laps.empty:
         raise ValueError("Lap rows are required for regime labels")
-    required = {"session_key", "driver_number", "lap_number", "is_pit_out_lap"}
-    if required - set(laps):
+    identity_columns = {"session_key", "driver_number", "lap_number"}
+    required_lap_columns = identity_columns | {"is_pit_out_lap"}
+    if required_lap_columns - set(laps):
         raise ValueError("Lap rows lack regime identity/pit-out columns")
     identity = laps[["session_key", "driver_number", "lap_number"]].copy()
     identity["is_pit_out_lap"] = [
         strict_optional_bool(value, field="openf1.laps.is_pit_out_lap")
         for value in laps["is_pit_out_lap"]
     ]
-    for column in required:
+    for column in identity_columns:
         identity[column] = pd.to_numeric(identity[column], errors="coerce")
 
     pit_keys: set[tuple[int, int, int]] = set()
     pits = pd.DataFrame(pit_rows or [])
-    if not pits.empty and required <= set(pits):
-        for _, row in pits.dropna(subset=list(required)).iterrows():
+    if not pits.empty and identity_columns <= set(pits):
+        normalized_pits = pits.copy()
+        for column in identity_columns:
+            normalized_pits[column] = pd.to_numeric(normalized_pits[column], errors="coerce")
+        for _, row in normalized_pits.dropna(subset=list(identity_columns)).iterrows():
             pit_keys.add((int(row.session_key), int(row.driver_number), int(row.lap_number)))
 
     out_map = {
