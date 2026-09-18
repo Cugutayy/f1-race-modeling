@@ -37,8 +37,12 @@ jobs:
           result = replay(load_jsonl(source), session_key=9693, snapshot_every=250)
           if result["accepted_count"] <= 0:
               raise SystemExit("Replay accepted no provider observations")
+          required_topics = {"position", "laps", "weather", "race_control"}
+          missing = sorted(required_topics - set(result["topic_counts"]))
+          if missing:
+              raise SystemExit(f"Replay capture lacks required topics: {missing}")
           write_replay(Path("reports/replay/replay.json"), result)
-          print(json.dumps({k: result[k] for k in ("source_sha256","event_count","accepted_count","rejected_count")}, indent=2))
+          print(json.dumps({k: result[k] for k in ("source_sha256","event_count","accepted_count","rejected_count","topic_counts")}, indent=2))
           PY
       - uses: actions/upload-artifact@v4
         with:
