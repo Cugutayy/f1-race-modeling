@@ -84,3 +84,14 @@ def test_production_gate_rejects_predictions_outside_sealed_test(tmp_path):
                         calibration=calibration, replay_capture=replay)
     assert result["production_ready"] is False
     assert "sealed test" in result["checks"]["benchmark"]["detail"]
+
+
+def test_production_gate_rejects_benchmark_without_calibration_evidence(tmp_path):
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
+    payload = json.loads(benchmark.read_text())
+    payload.pop("winner_calibration")
+    benchmark.write_text(json.dumps(payload))
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model,
+                        calibration=calibration, replay_capture=replay)
+    assert result["production_ready"] is False
+    assert "calibration" in result["checks"]["benchmark"]["detail"]
