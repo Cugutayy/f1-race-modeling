@@ -19,7 +19,8 @@ def _artifact(path: Path, **overrides) -> Path:
         "verification_status": "PASS_WITH_GAPS",
         "hard_mismatch_count": 0,
         "warning_count": 0,
-        "insufficient_hard_count": 27,
+        "insufficient_hard_count": 0,
+        "audit_gap_count": 27,
         "insufficient_secondary_count": 80,
         "provider_errors": {},
         "event_identity": {"verified": True},
@@ -36,6 +37,7 @@ def test_matrix_preserves_real_artifact_identity_and_hash(tmp_path: Path):
     assert matrix["event_count"] == 1
     assert matrix["pass_with_gaps_count"] == 1
     assert matrix["hard_mismatch_count"] == 0
+    assert matrix["audit_gap_count"] == 27
     assert matrix["policy"]["real_artifacts_only"] is True
     row = matrix["events"][0]
     assert row["year"] == 2025
