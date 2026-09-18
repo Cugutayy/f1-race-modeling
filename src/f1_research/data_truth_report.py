@@ -21,6 +21,7 @@ def render_markdown(matrix: dict[str, Any]) -> str:
         f"- PASS_WITH_GAPS: {matrix['pass_with_gaps_count']}",
         f"- FAIL: {matrix['fail_count']}",
         f"- Hard mismatches: {matrix['hard_mismatch_count']}",
+        f"- Audit capability gaps: {matrix.get('audit_gap_count', 0)}",
         f"- Provider errors: {matrix['provider_error_count']}",
         "",
         "| Season | Round | OpenF1 session | Status | Hard mismatch | Hard gaps | Secondary gaps | Reconciled | Source SHA-256 |",
