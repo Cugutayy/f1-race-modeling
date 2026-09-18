@@ -4,8 +4,8 @@ import pytest
 from f1_research.reliability import (
     ReliabilityRecord,
     calibrate_reliability,
-    records_from_rows,
     predict_hazard,
+    records_from_rows,
     reliability_overrides_from_state,
 )
 from f1_research.strategy import SimulationConfig, predict_from_state
