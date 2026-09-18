@@ -598,6 +598,25 @@ def live(
 
 
 
+@app.get("/v1/predictions/history")
+def prediction_history(
+    limit: int = Query(default=200, ge=1, le=2000),
+    _: None = Depends(_authorize),
+) -> JSONResponse:
+    rows: list[dict[str, Any]] = []
+    for line in reversed(_tail_lines(_prediction_ledger_path(), max_bytes=8 * 1024 * 1024)):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("prediction_id"):
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+    rows.reverse()
+    return JSONResponse(_safe({"count": len(rows), "predictions": rows}))
+
+
 @app.get("/v1/telemetry")
 def telemetry(
     driver_number: int = Query(ge=1, le=999),
