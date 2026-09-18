@@ -287,9 +287,10 @@ def test_dns_vs_zero_lap_retired_is_semantic_gap_not_false_hard_mismatch():
         for mismatch in report["mismatches"]
         if mismatch["driver_number"] == 6 and mismatch["field"] == "status_class"
     ]
+    assert report["insufficient_hard_count"] == 0
     assert any(
         gap["driver_number"] == 6 and gap["field"] == "start_status"
-        for gap in report["insufficient_hard_evidence"]
+        for gap in report["audit_gaps"]
     )
     normalized = {
         provider: {row["driver_number"]: row for row in rows}
