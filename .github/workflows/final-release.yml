@@ -21,7 +21,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e ".[dev,api]"
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
       - name: Production contract tests
         run: >
           pytest -q
