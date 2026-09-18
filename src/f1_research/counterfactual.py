@@ -7,17 +7,26 @@ from .strategy import SimulationConfig, Strategy, predict_from_state
 
 
 def pit_window(snapshot: dict[str, Any], *, total_laps: int, driver_number: int,
-               offsets: tuple[int, ...] = (0, 1, 2, 3, 5),
+               offsets: tuple[int, ...] = (1, 2, 3, 5),
                compounds: tuple[str, ...] = ("SOFT", "MEDIUM", "HARD"),
                config: SimulationConfig | None = None) -> dict[str, Any]:
     config = config or SimulationConfig()
-    if not offsets or any(offset < 0 for offset in offsets):
-        raise ValueError("pit offsets must be non-negative")
+    remaining = total_laps - int(snapshot.get("current_lap") or 0)
+    if not offsets or any(offset < 1 or offset > remaining for offset in offsets):
+        raise ValueError("pit offsets must be unique future laps within the remaining race")
+    if len(set(offsets)) != len(offsets):
+        raise ValueError("pit offsets must be unique future laps within the remaining race")
+    normalized_compounds = tuple(str(compound).upper() for compound in compounds)
+    if not normalized_compounds or len(set(normalized_compounds)) != len(normalized_compounds):
+        raise ValueError("strategy compounds must be non-empty and unique")
+    unsupported = sorted(set(normalized_compounds) - set(config.compound_pace_delta_s))
+    if unsupported:
+        raise ValueError(f"unsupported strategy compounds: {', '.join(unsupported)}")
     scenarios = []
-    for compound in compounds:
+    for compound in normalized_compounds:
         for offset in offsets:
             strategy = Strategy(
-                pit_in_laps=max(1, offset),
+                pit_in_laps=offset,
                 next_compound=compound,
                 label=f"pit+{offset}:{compound}",
             )
