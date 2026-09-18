@@ -53,7 +53,9 @@ def replay(events: Iterable[ReplayEvent], *, session_key: int | None = None,
     store = RaceStateStore(session_key=session_key)
     snapshots = []
     accepted = 0
+    topic_counts: dict[str, int] = {}
     for index, event in enumerate(ordered, 1):
+        topic_counts[event.topic] = topic_counts.get(event.topic, 0) + 1
         received = parse_provider_timestamp(event.received_at)
         if received is None:
             raise ValueError("invalid received_at")
@@ -71,6 +73,7 @@ def replay(events: Iterable[ReplayEvent], *, session_key: int | None = None,
         "event_count": len(ordered),
         "accepted_count": accepted,
         "rejected_count": len(ordered) - accepted,
+        "topic_counts": dict(sorted(topic_counts.items())),
         "snapshots": snapshots,
         "final_state": store.state.to_dict(),
     }
