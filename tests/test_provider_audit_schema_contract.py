@@ -13,7 +13,7 @@ def test_failure_report_has_explicit_schema_contract() -> None:
     )
 
     assert report["schema_version"] == 4
-    assert report["artifact_schema_version"] == 1
+    assert report["artifact_schema_version"] == 2
     assert report["reconciliation_schema_version"] is None
     assert report["verification_status"] == "FAIL"
 
@@ -87,6 +87,6 @@ def test_success_preserves_core_reconciliation_schema(monkeypatch, tmp_path: Pat
     )
 
     assert report["schema_version"] == 4
-    assert report["artifact_schema_version"] == 1
+    assert report["artifact_schema_version"] == 2
     assert report["reconciliation_schema_version"] == 4
     assert report["passed"] is True

@@ -68,7 +68,7 @@ def test_latency_does_not_permanently_drop_a_previous_lap():
     for lap, (offset, duration) in enumerate(zip(starts, durations), start=1):
         rows.append({"session_key": 1, "driver_number": 1, "lap_number": lap,
                      "date_start": (base + timedelta(seconds=offset)).isoformat(),
-                     "lap_duration": duration})
+                     "lap_duration": duration, "is_pit_out_lap": False})
     frame = build_lap_dataset(rows, latency_s=1.0, minimum_history=1)
     # Lap 4 is unavailable at lap 5 start (250 + 200 + 1 > 400),
     # but it is available by lap 6 start and must not have been discarded.
@@ -114,3 +114,20 @@ def test_live_feature_rows_match_training_schema():
     assert frame.iloc[0].lap_number == 21
     assert frame.iloc[0].compound == "MEDIUM"
     assert np.isfinite(frame.iloc[0].recent_median_5_s)
+
+
+def test_lap_dataset_parses_string_false_without_python_truthiness():
+    laps, _, _ = _session(901, drivers=1, laps=7)
+    for row in laps:
+        row["is_pit_out_lap"] = "false"
+    frame = build_lap_dataset(laps, latency_s=0.0, minimum_history=1)
+    assert not frame.empty
+    assert frame["is_pit_out_lap"].eq(False).all()
+
+
+def test_lap_dataset_rejects_malformed_pit_out_boolean():
+    laps, _, _ = _session(902, drivers=1, laps=7)
+    laps[0]["is_pit_out_lap"] = "maybe"
+    import pytest
+    with pytest.raises(ValueError, match="is_pit_out_lap"):
+        build_lap_dataset(laps, latency_s=0.0, minimum_history=1)

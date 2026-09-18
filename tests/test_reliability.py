@@ -5,6 +5,7 @@ from f1_research.reliability import (
     ReliabilityRecord,
     calibrate_reliability,
     predict_hazard,
+    records_from_rows,
     reliability_overrides_from_state,
 )
 from f1_research.strategy import SimulationConfig, predict_from_state
@@ -92,3 +93,16 @@ def test_driver_specific_hazard_changes_simulated_dnf_probability():
     assert by_driver[1]["dnf_probability"] > 10 * by_driver[2]["dnf_probability"]
     assert np.isfinite(by_driver[1]["expected_position"])
     assert report["audit"]["dnf_hazards_per_lap"] == {"1": 0.01, "2": 0.0001}
+
+
+def test_reliability_string_false_is_not_truthy():
+    rows = [
+        {"driver_number": 1, "number_of_laps": 50, "dnf": "false", "dns": "false", "dsq": "false"},
+        {"driver_number": 2, "number_of_laps": 20, "dnf": "true", "dns": "false", "dsq": "false"},
+        {"driver_number": 3, "number_of_laps": 40, "dnf": None, "dns": "false", "dsq": "false"},
+    ]
+    records = records_from_rows(999, 1, rows)
+    assert [(row.driver_number, row.failure, row.exposure) for row in records] == [
+        (1, 0, 50),
+        (2, 1, 21),
+    ]

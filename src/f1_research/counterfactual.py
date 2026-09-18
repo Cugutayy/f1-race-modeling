@@ -12,10 +12,19 @@ def pit_window(snapshot: dict[str, Any], *, total_laps: int, driver_number: int,
                config: SimulationConfig | None = None) -> dict[str, Any]:
     config = config or SimulationConfig()
     remaining = total_laps - int(snapshot.get("current_lap") or 0)
-    if not offsets or any(offset < 1 or offset > remaining for offset in offsets):
-        raise ValueError("pit offsets must be unique future laps within the remaining race")
+    if remaining < 1:
+        raise ValueError("race has no remaining laps")
+    if not offsets or any(
+        isinstance(offset, bool) or not isinstance(offset, int) or offset < 0 or offset >= remaining
+        for offset in offsets
+    ):
+        raise ValueError(
+            "pit offsets must be unique integers from 0 (pit now) through remaining_laps - 1"
+        )
     if len(set(offsets)) != len(offsets):
-        raise ValueError("pit offsets must be unique future laps within the remaining race")
+        raise ValueError(
+            "pit offsets must be unique integers from 0 (pit now) through remaining_laps - 1"
+        )
     normalized_compounds = tuple(str(compound).upper() for compound in compounds)
     if not normalized_compounds or len(set(normalized_compounds)) != len(normalized_compounds):
         raise ValueError("strategy compounds must be non-empty and unique")
@@ -28,7 +37,7 @@ def pit_window(snapshot: dict[str, Any], *, total_laps: int, driver_number: int,
             strategy = Strategy(
                 pit_in_laps=offset,
                 next_compound=compound,
-                label=f"pit+{offset}:{compound}",
+                label=(f"pit-now:{compound}" if offset == 0 else f"pit+{offset}:{compound}"),
             )
             report = predict_from_state(
                 snapshot, total_laps,

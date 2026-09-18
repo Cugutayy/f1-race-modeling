@@ -28,6 +28,7 @@ from .lap_intelligence import (
     build_lap_estimator,
     live_feature_rows,
 )
+from .value_parsing import strict_optional_bool
 
 REGIMES = ("green", "neutralized", "pit")
 
@@ -52,30 +53,39 @@ def attach_regime_labels(dataset: pd.DataFrame, lap_rows: list[dict[str, Any]],
     laps = pd.DataFrame(lap_rows)
     if laps.empty:
         raise ValueError("Lap rows are required for regime labels")
-    required = {"session_key", "driver_number", "lap_number"}
-    if required - set(laps):
-        raise ValueError("Lap rows lack regime identity columns")
+    identity_columns = {"session_key", "driver_number", "lap_number"}
+    required_lap_columns = identity_columns | {"is_pit_out_lap"}
+    if required_lap_columns - set(laps):
+        raise ValueError("Lap rows lack regime identity/pit-out columns")
     identity = laps[["session_key", "driver_number", "lap_number"]].copy()
-    identity["is_pit_out_lap"] = laps.get("is_pit_out_lap", False)
-    identity["is_pit_out_lap"] = identity.is_pit_out_lap.fillna(False).astype(bool)
-    for column in required:
+    identity["is_pit_out_lap"] = [
+        strict_optional_bool(value, field="openf1.laps.is_pit_out_lap")
+        for value in laps["is_pit_out_lap"]
+    ]
+    for column in identity_columns:
         identity[column] = pd.to_numeric(identity[column], errors="coerce")
 
     pit_keys: set[tuple[int, int, int]] = set()
     pits = pd.DataFrame(pit_rows or [])
-    if not pits.empty and required <= set(pits):
-        for _, row in pits.dropna(subset=list(required)).iterrows():
+    if not pits.empty and identity_columns <= set(pits):
+        normalized_pits = pits.copy()
+        for column in identity_columns:
+            normalized_pits[column] = pd.to_numeric(normalized_pits[column], errors="coerce")
+        for _, row in normalized_pits.dropna(subset=list(identity_columns)).iterrows():
             pit_keys.add((int(row.session_key), int(row.driver_number), int(row.lap_number)))
 
     out_map = {
-        (int(row.session_key), int(row.driver_number), int(row.lap_number)): bool(row.is_pit_out_lap)
-        for _, row in identity.dropna(subset=list(required)).iterrows()
+        (int(row.session_key), int(row.driver_number), int(row.lap_number)): row.is_pit_out_lap
+        for _, row in identity.dropna(subset=["session_key", "driver_number", "lap_number"]).iterrows()
     }
     labels = []
     for _, row in output.iterrows():
         key = (int(row.session_key), int(row.driver_number), int(row.lap_number))
-        if key in pit_keys or out_map.get(key, False):
+        pit_out = out_map.get(key)
+        if key in pit_keys or pit_out is True:
             labels.append("pit")
+        elif pit_out is None:
+            labels.append(None)
         elif float(row.get("safety_car_active", 0) or 0) > 0:
             labels.append("neutralized")
         else:
@@ -122,7 +132,7 @@ def _conformal_radius(actual: np.ndarray, predicted: np.ndarray, alpha: float) -
 
 
 def _fit_regressor(train: pd.DataFrame, spec: LapModelSpec):
-    green = train[(train.target_valid) & train.lap_regime.astype(str).eq("green")]
+    green = train[train.target_valid & train.lap_regime.eq("green")]
     if len(green) < 50:
         raise ValueError("Insufficient green laps for pace regression")
     model = build_lap_estimator(spec)
@@ -132,7 +142,7 @@ def _fit_regressor(train: pd.DataFrame, spec: LapModelSpec):
 
 def _select_regressor(train: pd.DataFrame, validation: pd.DataFrame,
                       specs: tuple[LapModelSpec, ...]) -> tuple[LapModelSpec, list[dict[str, Any]]]:
-    target = validation[(validation.target_valid) & validation.lap_regime.astype(str).eq("green")]
+    target = validation[validation.target_valid & validation.lap_regime.eq("green")]
     if target.empty:
         raise ValueError("Validation race has no green laps")
     trials = []
@@ -185,15 +195,20 @@ def fit_mixture(datasets: list[pd.DataFrame], *,
     selected, trials = _select_regressor(train, tuning, specs)
     pre_cal = pd.concat([train, tuning], ignore_index=True)
     regressor = _fit_regressor(pre_cal, selected)
-    classifier = build_regime_classifier().fit(pre_cal[FEATURES], pre_cal.lap_regime.astype(str))
+    classifier_train = pre_cal[pre_cal.lap_regime.notna()].copy()
+    if classifier_train.empty:
+        raise ValueError("No known lap-regime labels are available for classifier training")
+    classifier = build_regime_classifier().fit(
+        classifier_train[FEATURES], classifier_train.lap_regime.astype(str)
+    )
 
-    cal_green = calibration[(calibration.target_valid) & calibration.lap_regime.astype(str).eq("green")]
+    cal_green = calibration[calibration.target_valid & calibration.lap_regime.eq("green")]
     if cal_green.empty:
         raise ValueError("Calibration race has no green laps")
     cal_prediction = regressor.predict(cal_green[FEATURES])
     radius = _conformal_radius(cal_green.target_s.to_numpy(), cal_prediction, alpha)
 
-    test_green = test[(test.target_valid) & test.lap_regime.astype(str).eq("green")]
+    test_green = test[test.target_valid & test.lap_regime.eq("green")]
     if test_green.empty:
         raise ValueError("Sealed test race has no green laps")
     green_prediction = regressor.predict(test_green[FEATURES])
@@ -202,9 +217,12 @@ def fit_mixture(datasets: list[pd.DataFrame], *,
     coverage = float(((test_green.target_s.to_numpy() >= lower)
                       & (test_green.target_s.to_numpy() <= upper)).mean())
 
-    regime_probability = _full_regime_probability(classifier, test)
+    regime_test = test[test.lap_regime.notna()].copy()
+    if regime_test.empty:
+        raise ValueError("Sealed test has no known lap-regime labels")
+    regime_probability = _full_regime_probability(classifier, regime_test)
     regime_prediction = np.asarray(REGIMES, dtype=object)[np.argmax(regime_probability, axis=1)]
-    truth = test.lap_regime.astype(str).to_numpy()
+    truth = regime_test.lap_regime.astype(str).to_numpy()
     regime_accuracy = float(accuracy_score(truth, regime_prediction))
     regime_loss = float(log_loss(truth, regime_probability, labels=list(REGIMES)))
 

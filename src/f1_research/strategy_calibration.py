@@ -24,6 +24,7 @@ from .traffic_calibration import as_payload as traffic_payload
 from .traffic_calibration import calibrate_traffic_prior, config_values_from_payload
 from .tyre_calibration import as_payload as tyre_payload
 from .tyre_calibration import calibrate_tyre_priors, maps_from_payload
+from .value_parsing import strict_optional_bool
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,12 @@ def _dnf_exposure(rows: list[dict[str, Any]]) -> tuple[int, int]:
     failures = 0
     exposure = 0
     for row in rows:
-        if bool(row.get("dns")) or bool(row.get("dsq")):
+        dns = strict_optional_bool(row.get("dns"), field="openf1.session_result.dns")
+        dsq = strict_optional_bool(row.get("dsq"), field="openf1.session_result.dsq")
+        dnf = strict_optional_bool(row.get("dnf"), field="openf1.session_result.dnf")
+        if dns is None or dsq is None or dnf is None:
+            continue
+        if dns or dsq:
             continue
         try:
             laps = int(row.get("number_of_laps"))
@@ -112,7 +118,7 @@ def _dnf_exposure(rows: list[dict[str, Any]]) -> tuple[int, int]:
             continue
         if laps < 0:
             continue
-        failed = bool(row.get("dnf"))
+        failed = dnf
         failures += int(failed)
         exposure += laps + int(failed)
     return failures, exposure

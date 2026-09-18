@@ -1,5 +1,8 @@
 name: Research checks
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: [main, feat/production-readiness-v1]
 permissions:
   contents: read
 concurrency:

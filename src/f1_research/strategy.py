@@ -351,8 +351,47 @@ def simulate(
         next_compound = (strategy.next_compound if strategy else "MEDIUM").upper()
         if next_compound not in config.compound_pace_delta_s:
             raise ValueError(f"Unsupported strategy compound: {next_compound}")
-        pit_offsets.append(strategy.pit_in_laps if strategy else _default_pit_offset(driver, config))
+        pit_offset = strategy.pit_in_laps if strategy else _default_pit_offset(driver, config)
+        # An automatic default may point beyond the remaining race; in that case the
+        # correct default is no stop. Explicit user strategies remain fail-closed.
+        if strategy is None and pit_offset is not None and pit_offset >= laps_remaining:
+            pit_offset = None
+        if pit_offset is not None:
+            if (
+                isinstance(pit_offset, bool)
+                or not isinstance(pit_offset, int)
+                or pit_offset < 0
+                or pit_offset >= laps_remaining
+            ):
+                raise ValueError(
+                    "pit_in_laps must be an integer from 0 (pit now) through laps_remaining - 1"
+                )
+        pit_offsets.append(pit_offset)
         next_compounds.append(next_compound)
+
+    # Draw one latent pit-loss shock per sample/driver before scenario-dependent
+    # decisions. Reusing the same shock at every candidate pit offset is the actual
+    # common-random-number contract: changing pit timing must not also change the
+    # sampled stationary/lane-loss shock. Timing can still change whether the same
+    # base shock receives the Safety-Car multiplier.
+    pit_loss_base = np.maximum(
+        8.0,
+        rng.normal(
+            config.pit_loss_mean_s,
+            config.pit_loss_sd_s,
+            size=(n, m),
+        ),
+    )
+
+    # offset=0 means pit immediately, before the first future racing lap. It is
+    # intentionally distinct from offset=1, which means run one more lap then pit.
+    for j, pit_offset in enumerate(pit_offsets):
+        if pit_offset != 0:
+            continue
+        total[:, j] += pit_loss_base[:, j]
+        compounds[j] = next_compounds[j]
+        pit_done[j] = True
+        ages[j] = 0.0
 
     traffic_events = 0
     sc_samples_by_lap: dict[str, int] = {}
@@ -386,8 +425,7 @@ def simulate(
         for j, pit_offset in enumerate(pit_offsets):
             if pit_offset is None or pit_done[j] or lap != pit_offset:
                 continue
-            pit_loss = rng.normal(config.pit_loss_mean_s, config.pit_loss_sd_s, n)
-            pit_loss = np.maximum(8.0, pit_loss)
+            pit_loss = pit_loss_base[:, j].copy()
             pit_loss[sc_now] *= config.safety_car_pit_loss_multiplier
             total[:, j] += pit_loss
             compounds[j] = next_compounds[j]
@@ -440,6 +478,14 @@ def simulate(
             str(driver.driver_number): driver.dnf_hazard_per_lap for driver in drivers
         },
         "strategy_overrides": {str(key): asdict(value) for key, value in strategies.items()},
+        "strategy_offset_semantics": (
+            "0=pit immediately before first future lap; N>0=run N future laps then pit"
+        ),
+        "common_random_numbers": (
+            "one latent pit-loss draw is pre-sampled per sample/driver and reused "
+            "across candidate offsets; timing therefore does not change the pit-loss "
+            "shock or downstream RNG streams"
+        ),
         "status": "research simulation; not calibrated team strategy software",
     }
     return results, audit

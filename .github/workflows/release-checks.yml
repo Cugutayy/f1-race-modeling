@@ -1,4 +1,4 @@
-name: Final release checks
+name: Feature full regression checks
 on:
   workflow_dispatch:
   push:
@@ -11,6 +11,10 @@ on:
       - '.github/workflows/release-checks.yml'
 permissions:
   contents: read
+
+concurrency:
+  group: feature-regression-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:

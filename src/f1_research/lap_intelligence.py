@@ -21,6 +21,8 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from .value_parsing import strict_optional_bool
+
 NUMERIC_FEATURES = [
     "lap_number",
     "last_lap_s",
@@ -161,7 +163,10 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
     if not np.isfinite(latency_s) or latency_s < 0:
         raise ValueError("latency_s must be finite and nonnegative")
     laps = pd.DataFrame(lap_rows)
-    required = {"session_key", "driver_number", "lap_number", "date_start", "lap_duration"}
+    required = {
+        "session_key", "driver_number", "lap_number", "date_start",
+        "lap_duration", "is_pit_out_lap",
+    }
     if required - set(laps):
         raise ValueError(f"Missing lap fields: {sorted(required - set(laps))}")
     for column in ("session_key", "driver_number", "lap_number"):
@@ -176,8 +181,15 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
     laps["target_valid"] = laps.start.notna() & np.isfinite(laps.target_s) & laps.target_s.gt(0)
     laps["target_available_at"] = laps.start + pd.to_timedelta(laps.target_s.where(laps.target_valid), unit="s")
     laps["target_available_at"] += pd.to_timedelta(latency_s, unit="s")
-    pit_out = laps["is_pit_out_lap"] if "is_pit_out_lap" in laps else pd.Series(False, index=laps.index)
-    laps["is_pit_out_lap"] = pit_out.fillna(False).astype(bool)
+    laps["is_pit_out_lap"] = pd.array(
+        [
+            strict_optional_bool(value, field="openf1.laps.is_pit_out_lap")
+            for value in laps["is_pit_out_lap"]
+        ],
+        dtype="boolean",
+    )
+    # Unknown pit-out state is not a trustworthy target regime.
+    laps["target_valid"] &= laps["is_pit_out_lap"].notna()
     laps = _stint_features(laps, stint_rows or [])
     laps = _asof_weather(laps, weather_rows or [])
     laps = _race_control_features(laps, race_control_rows or [])
@@ -215,7 +227,10 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
                     "feature_available_at": max(source_times) if source_times else start,
                     "target_available_at": lap.target_available_at,
                     "target_s": float(lap.target_s) if lap.target_valid else np.nan,
-                    "target_valid": bool(lap.target_valid), "is_pit_out_lap": bool(lap.is_pit_out_lap),
+                    "target_valid": bool(lap.target_valid),
+                    "is_pit_out_lap": (
+                        None if pd.isna(lap.is_pit_out_lap) else bool(lap.is_pit_out_lap)
+                    ),
                     "last_lap_s": last, "recent_median_3_s": float(np.median(recent3)),
                     "recent_median_5_s": float(np.median(recent5)),
                     "recent_trend_s_per_lap": trend, "recent_variability_s": variability,

@@ -8,19 +8,55 @@ from typing import Any
 
 from .model_registry import load_manifest, sha256_file
 from .replay import load_jsonl, replay
+from .revision import validate_git_sha
 
 
-def _check_data_truth(path: Path) -> tuple[bool, str]:
+def _check_data_truth(
+    path: Path,
+    *,
+    expected_git_sha: str | None = None,
+) -> tuple[bool, str]:
     report = json.loads(path.read_text(encoding="utf-8"))
     events = report.get("events")
     if report.get("matrix_schema_version") != 1 or not isinstance(events, list) or not events:
         return False, "invalid/empty data-truth matrix"
     if len(events) < 12:
         return False, f"only {len(events)} real audited events; require at least 12"
-    failures = [e for e in events if e.get("verification_status") == "FAIL"]
-    if failures:
-        return False, f"{len(failures)} audited events failed"
-    return True, f"{len(events)} audited events; no FAIL status"
+    try:
+        producer_git_sha = validate_git_sha(
+            report.get("producer_git_sha"),
+            field="data_truth.producer_git_sha",
+        )
+    except ValueError as exc:
+        return False, str(exc)
+    if expected_git_sha is not None:
+        expected = validate_git_sha(expected_git_sha, field="expected_git_sha")
+        if producer_git_sha != expected:
+            return False, (
+                f"data-truth evidence revision {producer_git_sha} does not match "
+                f"release revision {expected}"
+            )
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            return False, f"data-truth event {index} is not an object"
+        if event.get("passed") is not True:
+            return False, f"data-truth event {index} is not explicitly passing"
+        if event.get("verification_status") not in {"PASS", "PASS_WITH_GAPS"}:
+            return False, f"data-truth event {index} has invalid passing status"
+        if event.get("event_identity_verified") is not True:
+            return False, f"data-truth event {index} lacks verified event identity"
+        if event.get("reconciliation_performed") is not True:
+            return False, f"data-truth event {index} was not reconciled"
+        if int(event.get("hard_mismatch_count", -1)) != 0:
+            return False, f"data-truth event {index} contains hard mismatches"
+        if int(event.get("provider_error_count", -1)) != 0:
+            return False, f"data-truth event {index} contains provider errors"
+        source_sha = str(event.get("source_sha256") or "").lower()
+        if len(source_sha) != 64 or any(ch not in "0123456789abcdef" for ch in source_sha):
+            return False, f"data-truth event {index} lacks a valid source SHA-256"
+        if event.get("producer_git_sha") != producer_git_sha:
+            return False, f"data-truth event {index} producer revision disagrees with matrix"
+    return True, f"{len(events)} audited events; reconciled with zero hard/provider failures"
 
 
 def _check_benchmark(path: Path) -> tuple[bool, str]:
@@ -53,24 +89,49 @@ def _check_benchmark(path: Path) -> tuple[bool, str]:
     return True, f"{report['test_events']} sealed held-out events"
 
 
-def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path, calibration: Path, replay_capture: Path | None = None) -> dict[str, Any]:
+def run_checks(
+    *,
+    data_truth: Path,
+    benchmark: Path,
+    manifest: Path,
+    model: Path,
+    calibration: Path,
+    feature_schema: Path,
+    training_data: Path,
+    replay_capture: Path | None = None,
+    expected_git_sha: str | None = None,
+) -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {}
-    for name, fn, path in (
-        ("data_truth", _check_data_truth, data_truth),
-        ("benchmark", _check_benchmark, benchmark),
-    ):
-        try:
-            passed, detail = fn(path)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            passed, detail = False, f"{type(exc).__name__}: {exc}"
-        checks[name] = {"passed": passed, "detail": detail}
+    try:
+        passed, detail = _check_data_truth(
+            data_truth,
+            expected_git_sha=expected_git_sha,
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        passed, detail = False, f"{type(exc).__name__}: {exc}"
+    checks["data_truth"] = {"passed": passed, "detail": detail}
+    try:
+        passed, detail = _check_benchmark(benchmark)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        passed, detail = False, f"{type(exc).__name__}: {exc}"
+    checks["benchmark"] = {"passed": passed, "detail": detail}
     try:
         loaded = load_manifest(manifest, model_path=model)
         benchmark_payload = json.loads(benchmark.read_text(encoding="utf-8"))
         if benchmark_payload.get("run_id") != loaded.benchmark_run_id:
             raise ValueError("model manifest benchmark run does not match benchmark artifact")
+        if expected_git_sha is not None:
+            expected = validate_git_sha(expected_git_sha, field="expected_git_sha")
+            if loaded.git_sha != expected:
+                raise ValueError(
+                    f"model manifest revision {loaded.git_sha} does not match release revision {expected}"
+                )
         if sha256_file(calibration) != loaded.calibration_sha256:
             raise ValueError("calibration artifact SHA-256 does not match manifest")
+        if sha256_file(feature_schema) != loaded.feature_schema_sha256:
+            raise ValueError("feature schema SHA-256 does not match manifest")
+        if sha256_file(training_data) != loaded.training_data_sha256:
+            raise ValueError("training data SHA-256 does not match manifest")
         checks["model_integrity"] = {"passed": True, "detail": loaded.model_id}
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         checks["model_integrity"] = {"passed": False, "detail": f"{type(exc).__name__}: {exc}"}
@@ -99,11 +160,23 @@ def main(argv=None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
+    parser.add_argument("--feature-schema", type=Path, required=True)
+    parser.add_argument("--training-data", type=Path, required=True)
     parser.add_argument("--replay-capture", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-git-sha")
     args = parser.parse_args(argv)
-    result = run_checks(data_truth=args.data_truth, benchmark=args.benchmark,
-                        manifest=args.manifest, model=args.model, calibration=args.calibration, replay_capture=args.replay_capture)
+    result = run_checks(
+        data_truth=args.data_truth,
+        benchmark=args.benchmark,
+        manifest=args.manifest,
+        model=args.model,
+        calibration=args.calibration,
+        feature_schema=args.feature_schema,
+        training_data=args.training_data,
+        replay_capture=args.replay_capture,
+        expected_git_sha=args.expected_git_sha,
+    )
     rendered = json.dumps(result, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
