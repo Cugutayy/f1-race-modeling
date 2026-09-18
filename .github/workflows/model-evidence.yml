@@ -2,10 +2,6 @@ name: Sealed model evidence
 # Produces benchmark, model manifest, model bytes and calibration from the same release run.
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/production-readiness-v1]
-    paths:
-      - '.github/workflows/model-evidence.yml'
 permissions:
   actions: read
   contents: read
