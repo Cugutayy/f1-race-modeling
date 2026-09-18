@@ -49,6 +49,8 @@ def _check_data_truth(
             return False, f"data-truth event {index} was not reconciled"
         if int(event.get("hard_mismatch_count", -1)) != 0:
             return False, f"data-truth event {index} contains hard mismatches"
+        if int(event.get("insufficient_hard_count", -1)) != 0:
+            return False, f"data-truth event {index} lacks complete hard-field evidence"
         if int(event.get("provider_error_count", -1)) != 0:
             return False, f"data-truth event {index} contains provider errors"
         source_sha = str(event.get("source_sha256") or "").lower()
