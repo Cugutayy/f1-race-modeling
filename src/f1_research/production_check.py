@@ -79,7 +79,13 @@ def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path
     else:
         try:
             result = replay(load_jsonl(replay_capture), snapshot_every=100)
-            checks["replay"] = {"passed": result["accepted_count"] > 0, "detail": f"{result['accepted_count']}/{result['event_count']} accepted"}
+            required_topics = {"position", "laps", "weather", "race_control"}
+            missing_topics = sorted(required_topics - set(result["topic_counts"]))
+            replay_passed = result["accepted_count"] > 0 and not missing_topics
+            detail = f"{result['accepted_count']}/{result['event_count']} accepted"
+            if missing_topics:
+                detail += f"; missing topics: {', '.join(missing_topics)}"
+            checks["replay"] = {"passed": replay_passed, "detail": detail}
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             checks["replay"] = {"passed": False, "detail": f"{type(exc).__name__}: {exc}"}
     passed = all(item["passed"] for item in checks.values())
