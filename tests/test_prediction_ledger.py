@@ -8,9 +8,9 @@ from f1_research.prediction_ledger import append_jsonl, make_record
 def _record(**overrides):
     args = dict(
         event_id="2026-01", forecast_origin="post_qualifying",
-        model_id="rank-ensemble-v1", model_sha256="m" * 64,
+        model_id="rank-ensemble-v1", model_sha256="a" * 64,
         features={"driver": "VER", "quali_position": 1},
-        evidence_sha256="e" * 64, cutoff_at="2026-03-07T08:00:00+00:00",
+        evidence_sha256="b" * 64, cutoff_at="2026-03-07T08:00:00+00:00",
         payload={"win_probability": 0.4}, created_at="2026-03-07T08:01:00+00:00",
     )
     args.update(overrides)
@@ -35,3 +35,13 @@ def test_append_is_idempotent_for_same_prediction(tmp_path):
 def test_missing_provenance_fails_closed():
     with pytest.raises(ValueError, match="provenance"):
         _record(evidence_sha256="")
+
+
+def test_invalid_digest_fails_closed():
+    with pytest.raises(ValueError, match="SHA-256"):
+        _record(model_sha256="not-a-digest")
+
+
+def test_naive_cutoff_timestamp_fails_closed():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _record(cutoff_at="2026-03-07T08:00:00")
