@@ -351,8 +351,41 @@ def simulate(
         next_compound = (strategy.next_compound if strategy else "MEDIUM").upper()
         if next_compound not in config.compound_pace_delta_s:
             raise ValueError(f"Unsupported strategy compound: {next_compound}")
-        pit_offsets.append(strategy.pit_in_laps if strategy else _default_pit_offset(driver, config))
+        pit_offset = strategy.pit_in_laps if strategy else _default_pit_offset(driver, config)
+        if pit_offset is not None:
+            if (
+                isinstance(pit_offset, bool)
+                or not isinstance(pit_offset, int)
+                or pit_offset < 0
+                or pit_offset >= laps_remaining
+            ):
+                raise ValueError(
+                    "pit_in_laps must be an integer from 0 (pit now) through laps_remaining - 1"
+                )
+        pit_offsets.append(pit_offset)
         next_compounds.append(next_compound)
+
+    # Draw the complete pit-loss random field before scenario-dependent decisions.
+    # This keeps downstream RNG consumption aligned across counterfactual pit timings,
+    # which is required for genuine common-random-number comparisons.
+    pit_loss_draws = np.maximum(
+        8.0,
+        rng.normal(
+            config.pit_loss_mean_s,
+            config.pit_loss_sd_s,
+            size=(laps_remaining, n, m),
+        ),
+    )
+
+    # offset=0 means pit immediately, before the first future racing lap. It is
+    # intentionally distinct from offset=1, which means run one more lap then pit.
+    for j, pit_offset in enumerate(pit_offsets):
+        if pit_offset != 0:
+            continue
+        total[:, j] += pit_loss_draws[0, :, j]
+        compounds[j] = next_compounds[j]
+        pit_done[j] = True
+        ages[j] = 0.0
 
     traffic_events = 0
     sc_samples_by_lap: dict[str, int] = {}
