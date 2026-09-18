@@ -47,8 +47,10 @@ jobs:
           manifest="$(find evidence/model -name model_manifest.json -type f -print -quit)"
           model="$(find evidence/model -name model.joblib -type f -print -quit)"
           calibration="$(find evidence/model -name calibration.json -type f -print -quit)"
+          feature_schema="$(find evidence/model -name feature_schema.json -type f -print -quit)"
+          training_data="$(find evidence/model -name training_features.csv -type f -print -quit)"
           replay="$(find evidence/replay -name events.jsonl -type f -print -quit)"
-          for item in "$truth" "$benchmark" "$manifest" "$model" "$calibration" "$replay"; do
+          for item in "$truth" "$benchmark" "$manifest" "$model" "$calibration" "$feature_schema" "$training_data" "$replay"; do
             test -n "$item" && test -f "$item" || { echo "required evidence artifact missing"; exit 1; }
           done
           f1-production-check \
@@ -57,6 +59,8 @@ jobs:
             --manifest "$manifest" \
             --model "$model" \
             --calibration "$calibration" \
+            --feature-schema "$feature_schema" \
+            --training-data "$training_data" \
             --replay-capture "$replay" \
             --expected-git-sha "$GITHUB_SHA" \
             --output evidence/PRODUCTION_READINESS.json
