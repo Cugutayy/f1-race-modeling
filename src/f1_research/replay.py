@@ -32,7 +32,12 @@ def load_jsonl(path: Path) -> list[ReplayEvent]:
         if not line.strip():
             continue
         row = json.loads(line)
-        if not isinstance(row, dict) or not isinstance(row.get("topic"), str) or not isinstance(row.get("payload"), dict):
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("topic"), str)
+            or not row["topic"].strip()
+            or not isinstance(row.get("payload"), dict)
+        ):
             raise ValueError(f"invalid replay row {number}")
         received = row.get("received_at")
         if parse_provider_timestamp(received) is None:
@@ -47,20 +52,25 @@ def replay(events: Iterable[ReplayEvent], *, session_key: int | None = None,
            snapshot_every: int = 1) -> dict[str, Any]:
     if snapshot_every < 1:
         raise ValueError("snapshot_every must be >= 1")
-    ordered = sorted(list(events), key=lambda event: (_event_time(event), event.topic))
+    # Python's sort is stable: same-timestamp provider messages retain capture order.
+    # Do not invent a cross-topic ordering that did not exist in the source stream.
+    ordered = sorted(list(events), key=_event_time)
     if not ordered:
         raise ValueError("replay has no events")
     store = RaceStateStore(session_key=session_key)
     snapshots = []
     accepted = 0
     topic_counts: dict[str, int] = {}
+    accepted_topic_counts: dict[str, int] = {}
     for index, event in enumerate(ordered, 1):
-        topic_counts[event.topic] = topic_counts.get(event.topic, 0) + 1
+        topic = event.topic.rsplit("/", 1)[-1]
+        topic_counts[topic] = topic_counts.get(topic, 0) + 1
         received = parse_provider_timestamp(event.received_at)
         if received is None:
             raise ValueError("invalid received_at")
         if store.ingest(event.topic, event.payload, received_at=received):
             accepted += 1
+            accepted_topic_counts[topic] = accepted_topic_counts.get(topic, 0) + 1
         if index % snapshot_every == 0 or index == len(ordered):
             snapshots.append({"sequence": index, "state": store.state.to_dict()})
     canonical = json.dumps(
@@ -74,6 +84,7 @@ def replay(events: Iterable[ReplayEvent], *, session_key: int | None = None,
         "accepted_count": accepted,
         "rejected_count": len(ordered) - accepted,
         "topic_counts": dict(sorted(topic_counts.items())),
+        "accepted_topic_counts": dict(sorted(accepted_topic_counts.items())),
         "snapshots": snapshots,
         "final_state": store.state.to_dict(),
     }
