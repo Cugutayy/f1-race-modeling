@@ -11,7 +11,7 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
+def _files(tmp_path, *, status="PASS", test_events=12):
     truth = tmp_path / "truth.json"
     truth.write_text(json.dumps({
         "matrix_schema_version": 1,
@@ -23,6 +23,8 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
                 "event_identity_verified": status != "FAIL",
                 "reconciliation_performed": status != "FAIL",
                 "hard_mismatch_count": 0 if status != "FAIL" else 1,
+                "insufficient_hard_count": 0,
+                "insufficient_secondary_count": 0,
                 "provider_error_count": 0,
                 "source_sha256": "b" * 64,
                 "producer_git_sha": GIT_SHA,
@@ -39,6 +41,29 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
             "fit": ["E1"], "tuning": ["E2"], "calibration": ["E3"],
             "test": [f"T{i}" for i in range(test_events)],
         }},
+    }))
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "uncertainty.json").write_text(json.dumps({
+        "schema_version": 1,
+        "unit": "whole race event",
+        "bootstrap_samples": 10000,
+        "seed": 42,
+        "baseline": "qualifying_order",
+        "paired_vs_baseline": {
+            "rank-v1": {
+                "winner_log_loss": {
+                    "mean_difference_model_minus_baseline": -0.1,
+                    "interval_95": [-0.3, 0.05],
+                    "events": test_events,
+                    "model_better_events": 7,
+                    "baseline_better_events": 5,
+                    "ties": 0,
+                    "bootstrap_fraction_favorable": 0.9,
+                    "direction": "lower"
+                }
+            }
+        }
     }))
     model = tmp_path / "model.bin"
     model.write_bytes(b"model")
@@ -146,6 +171,23 @@ def test_production_gate_rejects_predictions_outside_sealed_test(tmp_path):
         replay_capture=replay)
     assert result["production_ready"] is False
     assert "sealed test" in result["checks"]["benchmark"]["detail"]
+
+
+def test_production_gate_rejects_missing_event_bootstrap_evidence(tmp_path):
+    truth, benchmark, manifest, model, calibration, feature_schema, training_data, replay = _files(tmp_path)
+    (benchmark.parent / "evidence" / "uncertainty.json").unlink()
+    result = run_checks(
+        data_truth=truth,
+        benchmark=benchmark,
+        manifest=manifest,
+        model=model,
+        calibration=calibration,
+        feature_schema=feature_schema,
+        training_data=training_data,
+        replay_capture=replay,
+    )
+    assert result["production_ready"] is False
+    assert "uncertainty" in result["checks"]["benchmark"]["detail"]
 
 
 def test_production_gate_rejects_benchmark_without_calibration_evidence(tmp_path):
