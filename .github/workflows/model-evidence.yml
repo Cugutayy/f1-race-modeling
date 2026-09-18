@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/model-evidence.yml'
 permissions:
+  actions: read
   contents: read
 concurrency:
   group: sealed-model-evidence-${{ github.ref }}
@@ -68,6 +69,33 @@ jobs:
           assert {row["event_id"] for row in report["predictions"]} == test
           print("sealed release contract verified")
           PY
+      - name: Resolve latest successful real data and replay evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          data_run="$(gh run list --repo "$REPO" --workflow 'Real provider data-truth audit' --branch "$BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          replay_run="$(gh run list --repo "$REPO" --workflow 'Historical replay evidence' --branch "$BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          test -n "$data_run" || { echo "No successful real data-truth run"; exit 1; }
+          test -n "$replay_run" || { echo "No successful real replay run"; exit 1; }
+          mkdir -p reports/final-evidence/data reports/final-evidence/replay
+          gh run download "$data_run" --repo "$REPO" --pattern 'data-truth-matrix-*' --dir reports/final-evidence/data
+          gh run download "$replay_run" --repo "$REPO" --pattern 'real-replay-*' --dir reports/final-evidence/replay
+      - name: Run final production evidence gate
+        run: |
+          truth="$(find reports/final-evidence/data -name data_truth_matrix.json -type f -print -quit)"
+          replay="$(find reports/final-evidence/replay -name events.jsonl -type f -print -quit)"
+          root="reports/model-release/release"
+          test -f "$truth" && test -f "$replay"
+          f1-production-check \
+            --data-truth "$truth" \
+            --benchmark "$root/benchmark/report.json" \
+            --manifest "$root/model_manifest.json" \
+            --model "$root/model.joblib" \
+            --calibration "$root/calibration.json" \
+            --replay-capture "$replay" \
+            --output reports/model-release/PRODUCTION_READINESS.json
       - uses: actions/upload-artifact@v4
         with:
           name: sealed-model-release-${{ github.run_id }}
