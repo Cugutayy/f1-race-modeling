@@ -32,14 +32,24 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
         _sha(b"calibration"), "2026-03-01T00:00:00Z", "sealed-1", "abc123",
     ))
     replay = tmp_path / "replay.jsonl"
-    replay.write_text(json.dumps({
-        "topic": "position",
-        "received_at": "2026-03-08T05:00:00Z",
-        "payload": {
-            "date": "2026-03-08T05:00:00Z", "session_key": 1,
-            "driver_number": 1, "position": 1,
-        },
-    }) + "\n")
+    replay_rows = [
+        ("position", {"driver_number": 1, "position": 1}),
+        ("laps", {"driver_number": 1, "lap_number": 1, "lap_duration": 90.0}),
+        ("weather", {"track_temperature": 30.0, "air_temperature": 20.0, "rainfall": 0}),
+        ("race_control", {"category": "Flag", "flag": "GREEN", "message": "GREEN LIGHT"}),
+    ]
+    replay.write_text("".join(
+        json.dumps({
+            "topic": topic,
+            "received_at": f"2026-03-08T05:00:0{index}Z",
+            "payload": {
+                "date": f"2026-03-08T05:00:0{index}Z",
+                "session_key": 1,
+                **payload,
+            },
+        }) + "\n"
+        for index, (topic, payload) in enumerate(replay_rows)
+    ))
     return truth, benchmark, manifest, model, calibration, replay
 
 
@@ -95,3 +105,16 @@ def test_production_gate_rejects_benchmark_without_calibration_evidence(tmp_path
                         calibration=calibration, replay_capture=replay)
     assert result["production_ready"] is False
     assert "calibration" in result["checks"]["benchmark"]["detail"]
+
+
+def test_production_gate_rejects_single_topic_replay(tmp_path):
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
+    replay.write_text(json.dumps({
+        "topic": "position", "received_at": "2026-03-08T05:00:00Z",
+        "payload": {"date": "2026-03-08T05:00:00Z", "session_key": 1,
+                    "driver_number": 1, "position": 1},
+    }) + "\n")
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model,
+                        calibration=calibration, replay_capture=replay)
+    assert result["production_ready"] is False
+    assert "missing topics" in result["checks"]["replay"]["detail"]
