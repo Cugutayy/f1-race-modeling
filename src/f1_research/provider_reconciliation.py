@@ -433,10 +433,11 @@ def _position_required(row: ResultRow) -> bool:
 def _provider_integrity(
     provider: str,
     rows: list[ResultRow],
-) -> tuple[list[Mismatch], list[dict[str, Any]]]:
-    """Return hard integrity failures plus explicit hard-evidence gaps."""
+) -> tuple[list[Mismatch], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return hard failures, release-blocking gaps, and non-blocking audit gaps."""
     failures: list[Mismatch] = []
     insufficient: list[dict[str, Any]] = []
+    audit_gaps: list[dict[str, Any]] = []
     positions = [row.position for row in rows if row.position is not None]
 
     if len(positions) != len(set(positions)):
@@ -464,7 +465,8 @@ def _provider_integrity(
 
     for row in rows:
         if row.position is None:
-            insufficient.append({
+            target = insufficient if _position_required(row) else audit_gaps
+            target.append({
                 "provider": provider,
                 "driver_number": row.driver_number,
                 "field": "position",
@@ -472,7 +474,7 @@ def _provider_integrity(
                 "reason": (
                     "provider omits final position for a classified finisher/lapped car"
                     if _position_required(row)
-                    else "provider does not expose a final position for this non-finisher"
+                    else "provider contract does not expose final position for this non-finisher"
                 ),
             })
         if row.laps is None:
@@ -500,7 +502,7 @@ def _provider_integrity(
                 "hard",
                 "provider is missing normalized classification status",
             ))
-    return failures, insufficient
+    return failures, insufficient, audit_gaps
 
 
 def _row_index(rows: Iterable[ResultRow]) -> dict[int, ResultRow]:
