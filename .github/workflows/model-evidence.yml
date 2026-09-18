@@ -39,6 +39,11 @@ jobs:
             --output reports/model-release/release \
             --test-events 12 --tuning-events 8 --calibration-events 6 --min-fit-events 30 \
             --modern-models hist_gradient_boosting,extra_trees,xgboost,lightgbm,catboost
+      - name: Build deployable model evidence
+        run: |
+          python -m f1_research.model_evidence \
+            --benchmark-dir reports/model-release/release/benchmark \
+            --output reports/model-release/release/model_evidence.json
       - name: Verify sealed release contract
         run: |
           python - <<'PY'
@@ -53,6 +58,8 @@ jobs:
           assert report["schema_version"] == 2
           assert report["audit"]["test_updates_model"] is False
           assert report["winner_calibration"], "missing calibration/ECE evidence"
+          live_evidence = json.loads((root / "model_evidence.json").read_text())
+          assert live_evidence["winner_calibration"], "deployable evidence lost calibration data"
           assert release["model_training_blocks"] == ["fit", "tuning"]
           assert release["calibration_used_for_model_fit"] is False
           assert manifest.benchmark_run_id == report["run_id"]
