@@ -108,6 +108,23 @@ def test_production_gate_can_pass_complete_evidence(tmp_path):
     assert result["production_ready"] is True
 
 
+
+def test_production_gate_accepts_nonblocking_provider_capability_gaps(tmp_path):
+    truth, benchmark, manifest, model, calibration, feature_schema, training_data, replay = _files(
+        tmp_path, status="PASS_WITH_GAPS"
+    )
+    result = run_checks(
+        data_truth=truth,
+        benchmark=benchmark,
+        manifest=manifest,
+        model=model,
+        calibration=calibration,
+        feature_schema=feature_schema,
+        training_data=training_data,
+        replay_capture=replay,
+    )
+    assert result["production_ready"] is True
+
 def test_production_gate_rejects_incomplete_hard_provider_evidence(tmp_path):
     truth, benchmark, manifest, model, calibration, feature_schema, training_data, replay = _files(tmp_path)
     payload = json.loads(truth.read_text())
