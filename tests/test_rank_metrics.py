@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from f1_research.model import score_event
 
@@ -11,7 +12,7 @@ def test_perfect_order_has_perfect_rank_metrics():
     assert metrics["position_mae"] == 0.0
     assert metrics["spearman_rank"] == 1.0
     assert metrics["kendall_rank"] == 1.0
-    assert metrics["ndcg"] == 1.0
+    assert metrics["ndcg"] == pytest.approx(1.0)
 
 
 def test_reversed_order_degrades_full_rank_metrics():
