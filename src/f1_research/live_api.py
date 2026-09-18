@@ -26,7 +26,7 @@ from .live_protocol import envelope as live_envelope
 from .live_quality import classify as classify_live_quality
 from .monitoring import snapshot as monitoring_snapshot
 from .model_registry import sha256_file
-from .prediction_ledger import append_jsonl, make_record
+from .prediction_ledger import append_jsonl, make_record, sha256_json
 from .reliability import reliability_overrides_from_state
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
@@ -346,6 +346,7 @@ def _record_live_prediction(state: dict[str, Any], report: dict[str, Any], pace_
             "current_lap": state.get("current_lap"),
             "state_updated_at": state.get("updated_at"),
             "provider_cutoff_at": cutoff,
+            "state_sha256": sha256_json(state),
         },
         evidence_sha256=sha256_file(manifest_path),
         cutoff_at=cutoff,
