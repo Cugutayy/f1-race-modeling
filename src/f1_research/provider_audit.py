@@ -18,7 +18,6 @@ from typing import Any
 import pandas as pd
 
 from .provider_event_identity import build_event_identity
-from .revision import current_git_sha
 from .provider_reconciliation import (
     collect_jolpica_raw,
     collect_openf1_raw,
@@ -27,6 +26,7 @@ from .provider_reconciliation import (
     normalize_openf1_results,
     reconcile_results,
 )
+from .revision import current_git_sha
 
 
 def _json_sha256(value: Any) -> str:
