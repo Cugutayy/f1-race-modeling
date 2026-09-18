@@ -480,10 +480,15 @@ def modelz(_: None = Depends(_authorize)) -> JSONResponse:
     evidence = _read_model_evidence()
     return JSONResponse(_safe({
         "ready": True,
-        "artifact_schema_version": artifact.get("schema_version") if isinstance(artifact, dict) else None,
-        "evidence_kind": evidence.get("evidence_kind"),
-        "sealed_test_events": evidence.get("sealed_test_events"),
-        "run_id": evidence.get("run_id"),
+        "live_pace_model": {
+            "artifact_schema_version": artifact.get("schema_version") if isinstance(artifact, dict) else None,
+            "evidence_scope": "strict live pace artifact; separate from race-outcome benchmark evidence",
+        },
+        "race_outcome_model_evidence": {
+            "evidence_kind": evidence.get("evidence_kind"),
+            "sealed_test_events": evidence.get("sealed_test_events"),
+            "benchmark_run_id": evidence.get("benchmark_run_id"),
+        },
     }))
 
 
