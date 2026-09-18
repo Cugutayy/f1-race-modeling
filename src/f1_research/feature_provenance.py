@@ -26,14 +26,20 @@ class FeatureEvidence:
             raise ValueError(f"invalid feature quality: {self.quality}")
         if not self.feature or not self.source:
             raise ValueError("feature/source must be explicit")
-        if len(self.source_sha256) != 64:
-            raise ValueError("source_sha256 must be a SHA-256 digest")
+        digest = str(self.source_sha256).lower()
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            raise ValueError("source_sha256 must be a SHA-256 hex digest")
         observed = pd.Timestamp(self.observed_at)
         available = pd.Timestamp(self.available_at)
         cutoff = pd.Timestamp(cutoff_at)
         if observed.tzinfo is None or available.tzinfo is None or cutoff.tzinfo is None:
             raise ValueError("feature timestamps and cutoff must be timezone-aware")
-        if available.tz_convert("UTC") > cutoff.tz_convert("UTC"):
+        observed = observed.tz_convert("UTC")
+        available = available.tz_convert("UTC")
+        cutoff = cutoff.tz_convert("UTC")
+        if observed > available:
+            raise ValueError(f"feature {self.feature} is available before it was observed")
+        if available > cutoff:
             raise ValueError(f"feature {self.feature} was unavailable at forecast cutoff")
 
 
