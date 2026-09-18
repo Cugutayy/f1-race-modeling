@@ -56,7 +56,10 @@ def build_release(
     selected = audit["selected_modern"]
     spec = CandidateSpec(selected["name"], selected["params"])
     features = build_features(clean)
-    train_ids = audit["split"]["fit"] + audit["split"]["tuning"] + audit["split"]["calibration"]
+    # Keep release model bytes identical in training scope to the model evaluated on the sealed test.
+    # Calibration events tune probability temperature only; fitting on them here would create an
+    # unevaluated model artifact and falsely attach sealed-test evidence to different model bytes.
+    train_ids = audit["split"]["fit"] + audit["split"]["tuning"]
     train = features[features.event_id.isin(train_ids)].copy()
     model = fit_selected(train, spec)
     model_path = output / "model.joblib"
@@ -98,6 +101,8 @@ def build_release(
         "calibration": str(calibration_path),
         "model_id": manifest.model_id,
         "sealed_test_events": report["test_events"],
+        "model_training_blocks": ["fit", "tuning"],
+        "calibration_used_for_model_fit": False,
         "run_id": report["run_id"],
     }
     (output / "release.json").write_text(json.dumps(release, indent=2), encoding="utf-8")
