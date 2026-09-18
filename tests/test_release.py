@@ -24,7 +24,10 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
             })
     frame = pd.DataFrame(rows)
 
+    fitted_event_ids = []
+
     def fake_fit(train, spec):
+        fitted_event_ids.extend(sorted(train.event_id.unique().tolist()))
         return DummyRegressor(strategy="mean").fit([[0.0]] * len(train), [0.5] * len(train))
     monkeypatch.setattr(rel, "fit_selected", fake_fit)
     monkeypatch.setattr(rel, "benchmark_v2", lambda clean, **kwargs: (
@@ -44,5 +47,8 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
                                calibration_events=2, min_fit_events=2)
     manifest = load_manifest(out / "model_manifest.json", model_path=out / "model.joblib")
     assert result["model_id"] == manifest.model_id
+    assert fitted_event_ids == ["E0", "E1", "E2", "E3"]
+    assert result["model_training_blocks"] == ["fit", "tuning"]
+    assert result["calibration_used_for_model_fit"] is False
     assert manifest.calibration_sha256 == sha256_file(out / "calibration.json")
     assert json.loads((out / "benchmark" / "report.json").read_text())["test_events"] == 2
