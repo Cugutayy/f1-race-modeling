@@ -1,6 +1,10 @@
 name: Historical replay evidence
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.release-trigger'
 permissions:
   contents: read
 concurrency:
