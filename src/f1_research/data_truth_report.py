@@ -50,6 +50,7 @@ def render_markdown(matrix: dict[str, Any]) -> str:
         "## Evidence policy",
         "",
         "- Missing provider evidence remains unknown; it is never converted to zero or false.",
+        "- Structural provider capability gaps remain visible as audit gaps; they are not hard contradictions.",
         "- Provider disagreements are not repaired by majority vote.",
         "- A passing artifact requires verified event identity and no provider errors.",
         "- SHA-256 identifies the exact reconciliation artifact summarized by each row.",
