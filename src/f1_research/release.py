@@ -10,6 +10,7 @@ from typing import Any
 import joblib
 import pandas as pd
 
+from .benchmark_evidence import save_uncertainty
 from .data import validate
 from .evaluation_v2 import benchmark_v2, save_v2_report
 from .features import FEATURES, build_features
@@ -47,6 +48,8 @@ def build_release(
     )
     benchmark_dir = output / "benchmark"
     report = save_v2_report(clean, metrics, predictions, audit, benchmark_dir)
+    uncertainty_dir = benchmark_dir / "evidence"
+    uncertainty = save_uncertainty(metrics, uncertainty_dir, baseline="qualifying_order", samples=10000, seed=42)
 
     selected = audit["selected_modern"]
     spec = CandidateSpec(selected["name"], selected["params"])
@@ -105,6 +108,9 @@ def build_release(
         "model_training_blocks": ["fit", "tuning"],
         "calibration_used_for_model_fit": False,
         "run_id": report["run_id"],
+        "uncertainty": str(uncertainty_dir / "uncertainty.json"),
+        "uncertainty_unit": uncertainty["unit"],
+        "uncertainty_bootstrap_samples": uncertainty["bootstrap_samples"],
     }
     (output / "release.json").write_text(json.dumps(release, indent=2), encoding="utf-8")
     return release
