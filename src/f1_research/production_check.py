@@ -31,7 +31,24 @@ def _check_benchmark(path: Path) -> tuple[bool, str]:
         return False, "fewer than 5 sealed/held-out events"
     if not report.get("predictions") or not report.get("metrics"):
         return False, "benchmark has no predictions/metrics"
-    return True, f"{report['test_events']} held-out events"
+    if report.get("schema_version") != 2:
+        return False, "benchmark must use sealed-evidence schema v2"
+    audit = report.get("audit")
+    if not isinstance(audit, dict) or audit.get("test_updates_model") is not False:
+        return False, "benchmark does not prove sealed-test isolation"
+    split = audit.get("split")
+    if not isinstance(split, dict):
+        return False, "benchmark split audit is missing"
+    names = ("fit", "tuning", "calibration", "test")
+    blocks = {name: set(split.get(name) or []) for name in names}
+    if any(blocks[a] & blocks[b] for i, a in enumerate(names) for b in names[i + 1:]):
+        return False, "benchmark split blocks overlap"
+    if set(report.get("predictions", [{}])[0].keys()).isdisjoint({"event_id"}):
+        return False, "benchmark predictions lack event identity"
+    predicted_events = {str(row.get("event_id")) for row in report["predictions"]}
+    if predicted_events != {str(value) for value in blocks["test"]}:
+        return False, "benchmark predictions are not exactly the sealed test block"
+    return True, f"{report['test_events']} sealed held-out events"
 
 
 def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path, calibration: Path, replay_capture: Path | None = None) -> dict[str, Any]:
