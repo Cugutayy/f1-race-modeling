@@ -1,0 +1,72 @@
+name: Production evidence gate
+on:
+  workflow_dispatch:
+    inputs:
+      data_truth_run_id:
+        description: GitHub Actions run id containing data-truth-matrix artifact
+        required: true
+      model_run_id:
+        description: GitHub Actions run id containing sealed-model-release artifact
+        required: true
+      replay_run_id:
+        description: GitHub Actions run id containing real-replay artifact
+        required: true
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - name: Download immutable evidence runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DATA_RUN: ${{ inputs.data_truth_run_id }}
+          MODEL_RUN: ${{ inputs.model_run_id }}
+          REPLAY_RUN: ${{ inputs.replay_run_id }}
+        run: |
+          mkdir -p evidence/data evidence/model evidence/replay
+          gh run download "$DATA_RUN" --repo "$REPO" --pattern 'data-truth-matrix-*' --dir evidence/data
+          gh run download "$MODEL_RUN" --repo "$REPO" --pattern 'sealed-model-release-*' --dir evidence/model
+          gh run download "$REPLAY_RUN" --repo "$REPO" --pattern 'real-replay-*' --dir evidence/replay
+      - name: Resolve evidence paths and run fail-closed gate
+        run: |
+          truth="$(find evidence/data -name data_truth_matrix.json -type f -print -quit)"
+          benchmark="$(find evidence/model -path '*/benchmark/report.json' -type f -print -quit)"
+          manifest="$(find evidence/model -name model_manifest.json -type f -print -quit)"
+          model="$(find evidence/model -name model.joblib -type f -print -quit)"
+          calibration="$(find evidence/model -name calibration.json -type f -print -quit)"
+          feature_schema="$(find evidence/model -name feature_schema.json -type f -print -quit)"
+          training_data="$(find evidence/model -name training_features.csv -type f -print -quit)"
+          replay="$(find evidence/replay -name events.jsonl -type f -print -quit)"
+          for item in "$truth" "$benchmark" "$manifest" "$model" "$calibration" "$feature_schema" "$training_data" "$replay"; do
+            test -n "$item" && test -f "$item" || { echo "required evidence artifact missing"; exit 1; }
+          done
+          f1-production-check \
+            --data-truth "$truth" \
+            --benchmark "$benchmark" \
+            --manifest "$manifest" \
+            --model "$model" \
+            --calibration "$calibration" \
+            --feature-schema "$feature_schema" \
+            --training-data "$training_data" \
+            --replay-capture "$replay" \
+            --expected-git-sha "$GITHUB_SHA" \
+            --output evidence/PRODUCTION_READINESS.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-readiness-${{ github.run_id }}
+          path: evidence/PRODUCTION_READINESS.json
+          if-no-files-found: error
+          retention-days: 180

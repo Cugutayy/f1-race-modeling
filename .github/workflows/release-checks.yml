@@ -1,16 +1,17 @@
-name: Research checks
+name: Feature full regression checks
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
+
 concurrency:
-  group: research-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: feature-regression-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,7 +21,9 @@ jobs:
           cache-dependency-path: requirements-lock.txt
       - run: python -m pip install -r requirements-lock.txt
       - run: python -m pip install -e . --no-deps
-      - run: python -m ruff check .
-      - run: python -m pytest -q
-      - run: python -m f1_research demo --output reports/ci-demo
-
+      - name: Static analysis
+        run: python -m ruff check .
+      - name: Full test suite
+        run: python -m pytest -q
+      - name: Deterministic demo smoke
+        run: python -m f1_research demo --output reports/final-demo

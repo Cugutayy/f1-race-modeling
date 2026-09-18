@@ -15,6 +15,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from .value_parsing import strict_optional_bool
+
 TEAM_STRENGTHS = (250.0, 500.0, 1000.0, 2000.0)
 DRIVER_STRENGTHS = (100.0, 250.0, 500.0, 1000.0)
 DEFAULT_TEAM_STRENGTH = 1000.0
@@ -74,7 +76,12 @@ def records_from_rows(
 
     output: list[ReliabilityRecord] = []
     for row in result_rows:
-        if bool(row.get("dns")) or bool(row.get("dsq")):
+        dns = strict_optional_bool(row.get("dns"), field="openf1.session_result.dns")
+        dsq = strict_optional_bool(row.get("dsq"), field="openf1.session_result.dsq")
+        dnf = strict_optional_bool(row.get("dnf"), field="openf1.session_result.dnf")
+        if dns is None or dsq is None or dnf is None:
+            continue
+        if dns or dsq:
             continue
         try:
             driver_number = int(row.get("driver_number"))
@@ -83,7 +90,7 @@ def records_from_rows(
             continue
         if driver_number <= 0 or completed_laps < 0:
             continue
-        failure = int(bool(row.get("dnf")))
+        failure = int(dnf)
         exposure = completed_laps + failure
         if exposure <= 0:
             continue

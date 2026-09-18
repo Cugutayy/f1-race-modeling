@@ -24,15 +24,31 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
             })
     frame = pd.DataFrame(rows)
 
+    fitted_event_ids = []
+
     def fake_fit(train, spec):
+        fitted_event_ids.extend(sorted(train.event_id.unique().tolist()))
         return DummyRegressor(strategy="mean").fit([[0.0]] * len(train), [0.5] * len(train))
     monkeypatch.setattr(rel, "fit_selected", fake_fit)
     monkeypatch.setattr(rel, "benchmark_v2", lambda clean, **kwargs: (
-        pd.DataFrame([{"event_id": "E7", "model": "modern::extra_trees",
-                       "position_mae": 0.0, "winner_log_loss": 0.1,
-                       "winner_brier": 0.01, "winner_accuracy": 1.0, "podium_recall": 1.0}]),
-        pd.DataFrame([{"event_id": "E7", "driver": "AAA", "model": "modern::extra_trees",
-                       "actual_position": 1, "predicted_position": 1}]),
+        pd.DataFrame([
+            {"event_id": event_id, "model": model,
+             "position_mae": 0.0 if model == "modern::extra_trees" else 0.5,
+             "winner_log_loss": 0.1 if model == "modern::extra_trees" else 0.3,
+             "winner_brier": 0.01 if model == "modern::extra_trees" else 0.05,
+             "winner_accuracy": 1.0, "podium_recall": 1.0,
+             "spearman_rank": 1.0, "kendall_rank": 1.0, "ndcg": 1.0}
+            for event_id in ("E6", "E7")
+            for model in ("modern::extra_trees", "qualifying_order")
+        ]),
+        pd.DataFrame([
+            {"event_id": event_id, "driver": driver, "model": model,
+             "actual_position": actual, "predicted_position": actual,
+             "win_probability": 0.8 if actual == 1 else 0.2}
+            for event_id in ("E6", "E7")
+            for model in ("modern::extra_trees", "qualifying_order")
+            for driver, actual in (("AAA", 1), ("BBB", 2))
+        ]),
         {"split": {"fit": ["E0", "E1"], "tuning": ["E2", "E3"],
                    "calibration": ["E4", "E5"], "test": ["E6", "E7"]},
          "selected_modern": {"name": "extra_trees", "params": {}},
@@ -44,5 +60,16 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
                                calibration_events=2, min_fit_events=2)
     manifest = load_manifest(out / "model_manifest.json", model_path=out / "model.joblib")
     assert result["model_id"] == manifest.model_id
+    assert fitted_event_ids == ["E0", "E1", "E2", "E3"]
+    assert result["model_training_blocks"] == ["fit", "tuning"]
+    assert result["calibration_used_for_model_fit"] is False
     assert manifest.calibration_sha256 == sha256_file(out / "calibration.json")
+    assert manifest.feature_schema_sha256 == sha256_file(out / "feature_schema.json")
+    assert manifest.training_data_sha256 == sha256_file(out / "training_features.csv")
+    assert result["feature_schema"] == str(out / "feature_schema.json")
+    assert result["training_data"] == str(out / "training_features.csv")
+    uncertainty = json.loads((out / "benchmark" / "evidence" / "uncertainty.json").read_text())
+    assert uncertainty["unit"] == "whole race event"
+    assert uncertainty["bootstrap_samples"] == 10000
+    assert result["uncertainty"] == str(out / "benchmark" / "evidence" / "uncertainty.json")
     assert json.loads((out / "benchmark" / "report.json").read_text())["test_events"] == 2

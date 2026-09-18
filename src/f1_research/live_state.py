@@ -20,13 +20,10 @@ from typing import Any
 import numpy as np
 
 from .data_truth import parse_provider_timestamp
+from .race_control import TrackState, reduce_race_control
 
 _LAP_DEFICIT_RE = re.compile(r"^\+?\s*(\d+)\s+LAPS?$", re.IGNORECASE)
 
-
-def _utc(value: Any, fallback: datetime | None = None) -> datetime:
-    parsed = parse_provider_timestamp(value)
-    return parsed if parsed is not None else fallback or datetime.now(UTC)
 
 
 def _finite(value: Any) -> float | None:
@@ -148,6 +145,9 @@ class RaceState:
     status: str | None = None
     flag: str | None = None
     safety_car: str | None = None
+    track_state: str = "UNKNOWN"
+    track_state_changed_at: str | None = None
+    track_state_message: str | None = None
     current_lap: int | None = None
     drivers: dict[int, DriverState] = field(default_factory=dict)
     weather: WeatherState = field(default_factory=WeatherState)
@@ -333,6 +333,17 @@ class RaceStateStore:
                 self.state.flag = payload.get("flag") or self.state.flag
             if category == "SafetyCar":
                 self.state.safety_car = payload.get("message") or self.state.safety_car
+            reduced = reduce_race_control(
+                TrackState(
+                    state=self.state.track_state,
+                    changed_at=self.state.track_state_changed_at,
+                    message=self.state.track_state_message,
+                ),
+                payload,
+            )
+            self.state.track_state = reduced.state
+            self.state.track_state_changed_at = reduced.changed_at
+            self.state.track_state_message = reduced.message
 
         if driver_number is not None:
             driver = self.state.driver(driver_number)

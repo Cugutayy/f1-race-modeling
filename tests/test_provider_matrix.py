@@ -9,8 +9,9 @@ from f1_research.provider_matrix import build_matrix, write_matrix
 def _artifact(path: Path, **overrides) -> Path:
     payload = {
         "schema_version": 4,
-        "artifact_schema_version": 1,
+        "artifact_schema_version": 2,
         "reconciliation_schema_version": 4,
+        "producer_git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "year": 2025,
         "round": 1,
         "openf1_session_key": 9693,
@@ -41,6 +42,8 @@ def test_matrix_preserves_real_artifact_identity_and_hash(tmp_path: Path):
     assert row["round_number"] == 1
     assert row["openf1_session_key"] == 9693
     assert len(row["source_sha256"]) == 64
+    assert row["producer_git_sha"] == "a" * 40
+    assert matrix["producer_git_sha"] == "a" * 40
 
     output = tmp_path / "matrix"
     write_matrix(matrix, output)
@@ -54,7 +57,8 @@ def test_matrix_preserves_real_artifact_identity_and_hash(tmp_path: Path):
         ({"schema_version": 3}, "unsupported reconciliation schema"),
         ({"reconciliation_schema_version": 3}, "unsupported reconciliation schema"),
         ({"reconciliation_schema_version": None}, "passing artifact has no reconciliation schema"),
-        ({"artifact_schema_version": 2}, "unsupported artifact schema"),
+        ({"artifact_schema_version": 1}, "unsupported artifact schema"),
+        ({"producer_git_sha": "not-a-git-sha"}, "producer_git_sha"),
         ({"passed": True, "verification_status": "FAIL"}, "passed and verification_status disagree"),
         ({"event_identity": {"verified": False}}, "passing audit cannot have failed event identity"),
         ({"provider_errors": {"OpenF1": "outage"}}, "passing audit cannot contain provider errors"),
@@ -110,3 +114,15 @@ def test_matrix_marks_completed_reconciliation_explicitly(tmp_path: Path):
     source = _artifact(tmp_path / "reconciled.json")
     row = build_matrix([source])["events"][0]
     assert row["reconciliation_performed"] is True
+
+
+def test_matrix_rejects_mixed_producer_revisions(tmp_path: Path):
+    first = _artifact(tmp_path / "a.json")
+    second = _artifact(
+        tmp_path / "b.json",
+        round=2,
+        openf1_session_key=9999,
+        producer_git_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    with pytest.raises(ValueError, match="same Git revision"):
+        build_matrix([first, second])

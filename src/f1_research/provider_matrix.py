@@ -15,8 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .revision import validate_git_sha
+
 EXPECTED_RECONCILIATION_SCHEMA = 4
-EXPECTED_ARTIFACT_SCHEMA = 1
+EXPECTED_ARTIFACT_SCHEMA = 2
 _ALLOWED_STATUS = {"PASS", "PASS_WITH_GAPS", "FAIL"}
 
 
@@ -27,6 +29,7 @@ class MatrixEvent:
     openf1_session_key: int
     source: str
     source_sha256: str
+    producer_git_sha: str
     verification_status: str
     passed: bool
     event_identity_verified: bool
@@ -130,6 +133,10 @@ def _load_event(path: Path) -> MatrixEvent:
         ),
         source=str(path),
         source_sha256=_sha256(path),
+        producer_git_sha=validate_git_sha(
+            payload.get("producer_git_sha"),
+            field="producer_git_sha",
+        ),
         verification_status=status,
         passed=passed,
         event_identity_verified=identity["verified"],
@@ -162,12 +169,18 @@ def build_matrix(paths: Iterable[Path]) -> dict[str, Any]:
     if len(session_keys) != len(set(session_keys)):
         raise ValueError("Duplicate OpenF1 session keys are forbidden")
 
+    producer_revisions = {event.producer_git_sha for event in events}
+    if len(producer_revisions) != 1:
+        raise ValueError("All provider-audit artifacts must come from the same Git revision")
+
     ordered = sorted(events, key=lambda event: (event.year, event.round_number))
     rows = [event.__dict__ for event in ordered]
+    producer_git_sha = next(iter(producer_revisions))
     return {
         "matrix_schema_version": 1,
         "reconciliation_schema_version": EXPECTED_RECONCILIATION_SCHEMA,
         "artifact_schema_version": EXPECTED_ARTIFACT_SCHEMA,
+        "producer_git_sha": producer_git_sha,
         "event_count": len(rows),
         "pass_count": sum(row["verification_status"] == "PASS" for row in rows),
         "pass_with_gaps_count": sum(

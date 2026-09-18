@@ -120,7 +120,7 @@ def build_strict_classifier() -> Pipeline:
 def _green(frame: pd.DataFrame) -> pd.DataFrame:
     if "lap_regime" not in frame:
         raise ValueError("lap_regime labels are required")
-    return frame[frame.target_valid & frame.lap_regime.astype(str).eq("green")].copy()
+    return frame[frame.target_valid & frame.lap_regime.eq("green")].copy()
 
 
 def _mae(actual: np.ndarray, predicted: np.ndarray) -> float:
@@ -226,7 +226,12 @@ def fit_strict_mixture(
     selected, trials = _select(train, tuning, specs)
     pre_cal = pd.concat([train, tuning], ignore_index=True)
     regressor = _fit_green(pre_cal, selected)
-    classifier = build_strict_classifier().fit(pre_cal[STRICT_FEATURES], pre_cal.lap_regime.astype(str))
+    classifier_train = pre_cal[pre_cal.lap_regime.notna()].copy()
+    if classifier_train.empty:
+        raise ValueError("No known strict lap-regime labels are available for classifier training")
+    classifier = build_strict_classifier().fit(
+        classifier_train[STRICT_FEATURES], classifier_train.lap_regime.astype(str)
+    )
 
     cal_green = _green(calibration)
     cal_prediction = regressor.predict(cal_green[STRICT_FEATURES])
@@ -241,9 +246,12 @@ def fit_strict_mixture(
     actual = test_green.target_s.to_numpy(dtype=float)
     coverage = float(((actual >= lower) & (actual <= upper)).mean())
 
-    regime_probability = _full_probabilities(classifier, test)
+    regime_test = test[test.lap_regime.notna()].copy()
+    if regime_test.empty:
+        raise ValueError("Sealed strict test has no known lap-regime labels")
+    regime_probability = _full_probabilities(classifier, regime_test)
     regime_prediction = np.asarray(REGIMES, dtype=object)[np.argmax(regime_probability, axis=1)]
-    truth = test.lap_regime.astype(str).to_numpy()
+    truth = regime_test.lap_regime.astype(str).to_numpy()
     regime_accuracy = float(accuracy_score(truth, regime_prediction))
     regime_loss = float(log_loss(truth, regime_probability, labels=list(REGIMES)))
 

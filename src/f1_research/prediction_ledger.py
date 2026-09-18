@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 
@@ -31,12 +32,36 @@ def sha256_json(value: Any) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
+_LEDGER_LOCK = Lock()
+
+
+def _valid_sha256(value: str) -> bool:
+    text = str(value).lower()
+    return len(text) == 64 and all(ch in "0123456789abcdef" for ch in text)
+
+
+def _aware_timestamp(value: str, *, field: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field} must be a valid ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must be timezone-aware")
+    return parsed.astimezone(UTC).isoformat()
+
+
 def make_record(*, event_id: str, forecast_origin: str, model_id: str,
                 model_sha256: str, features: dict[str, Any], evidence_sha256: str,
                 cutoff_at: str, payload: dict[str, Any], created_at: str | None = None) -> PredictionRecord:
     if not all(isinstance(v, str) and v.strip() for v in
                (event_id, forecast_origin, model_id, model_sha256, evidence_sha256, cutoff_at)):
         raise ValueError("prediction identity/provenance fields must be non-empty strings")
+    if not isinstance(features, dict) or not isinstance(payload, dict):
+        raise ValueError("prediction features and payload must be objects")
+    if not _valid_sha256(model_sha256) or not _valid_sha256(evidence_sha256):
+        raise ValueError("model/evidence provenance must be SHA-256 hex digests")
+    cutoff_at = _aware_timestamp(cutoff_at, field="cutoff_at")
+    created_at = _aware_timestamp(created_at, field="created_at") if created_at else datetime.now(UTC).isoformat()
     feature_sha = sha256_json(features)
     body = {
         "event_id": event_id, "forecast_origin": forecast_origin, "model_id": model_id,
@@ -45,7 +70,7 @@ def make_record(*, event_id: str, forecast_origin: str, model_id: str,
     }
     return PredictionRecord(
         prediction_id=sha256_json(body)[:24],
-        created_at=created_at or datetime.now(UTC).isoformat(),
+        created_at=created_at,
         **body,
     )
 
@@ -54,15 +79,16 @@ def append_jsonl(path: Path, record: PredictionRecord) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = _canonical(asdict(record)).decode()
-    if path.exists():
-        # Fail closed if an id was already emitted with different bytes.
-        for line in path.read_text(encoding="utf-8").splitlines():
-            old = json.loads(line)
-            if old.get("prediction_id") == record.prediction_id:
-                if sha256_json({k: v for k, v in old.items() if k != "created_at"}) != sha256_json(
-                    {k: v for k, v in asdict(record).items() if k != "created_at"}
-                ):
-                    raise ValueError("prediction_id collision with different immutable content")
-                return
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(encoded + "\n")
+    with _LEDGER_LOCK:
+        if path.exists():
+            # Fail closed if an id was already emitted with different bytes.
+            for line in path.read_text(encoding="utf-8").splitlines():
+                old = json.loads(line)
+                if old.get("prediction_id") == record.prediction_id:
+                    if sha256_json({k: v for k, v in old.items() if k != "created_at"}) != sha256_json(
+                        {k: v for k, v in asdict(record).items() if k != "created_at"}
+                    ):
+                        raise ValueError("prediction_id collision with different immutable content")
+                    return
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(encoded + "\n")

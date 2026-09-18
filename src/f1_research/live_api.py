@@ -24,7 +24,10 @@ from .live_intelligence import combined_live_report, combined_pit_windows, load_
 from .live_protocol import encode as encode_live_envelope
 from .live_protocol import envelope as live_envelope
 from .live_quality import classify as classify_live_quality
+from .model_registry import sha256_file
 from .monitoring import snapshot as monitoring_snapshot
+from .prediction_ledger import append_jsonl, make_record, sha256_json
+from .race_control import STATES
 from .reliability import reliability_overrides_from_state
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
@@ -34,6 +37,7 @@ DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
 DEFAULT_MODEL = ROOT / "reports" / "local" / "lap-strict" / "next_lap_strict.joblib"
 DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-strict" / "strategy_priors.json"
 DEFAULT_EVIDENCE = ROOT / "reports" / "local" / "model_evidence.json"
+DEFAULT_PREDICTION_LEDGER = ROOT / "reports" / "local" / "live" / "predictions.jsonl"
 MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
@@ -75,6 +79,10 @@ def _evidence_path() -> Path:
     return _path("F1_MODEL_EVIDENCE_PATH", DEFAULT_EVIDENCE)
 
 
+def _prediction_ledger_path() -> Path:
+    return _path("F1_PREDICTION_LEDGER_PATH", DEFAULT_PREDICTION_LEDGER)
+
+
 
 def _max_live_age_s() -> float:
     raw = os.environ.get("F1_MAX_LIVE_AGE_S", str(DEFAULT_MAX_LIVE_AGE_S))
@@ -87,15 +95,31 @@ def _max_live_age_s() -> float:
     return value
 
 
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    text = raw.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be an explicit boolean")
+
+
 def _require_live_stream() -> bool:
-    raw = os.environ.get("F1_REQUIRE_LIVE_STREAM", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return _env_flag("F1_REQUIRE_LIVE_STREAM", default=True)
 
 
 def _authorize(authorization: str | None = Header(default=None)) -> None:
     expected = os.environ.get("F1_API_TOKEN")
     if not expected:
-        return
+        if _env_flag("F1_ALLOW_UNAUTHENTICATED_API", default=False):
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="F1_API_TOKEN is not configured; unauthenticated API access is disabled",
+        )
     if authorization != f"Bearer {expected}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -213,12 +237,21 @@ def _load_artifact() -> dict[str, Any] | None:
 def _simulation_config(samples: int) -> tuple[SimulationConfig, dict[str, Any]]:
     path = _priors_path()
     if not path.exists():
+        if not _env_flag("F1_ALLOW_DEFAULT_PRIORS", default=False):
+            raise HTTPException(
+                status_code=503,
+                detail="Calibrated strategy priors are unavailable; built-in defaults are disabled",
+            )
         return SimulationConfig(samples=samples), {
             "source": "built_in_defaults",
-            "warning": "strategy_priors.json is unavailable",
+            "warning": (
+                "strategy_priors.json is unavailable; explicit research override "
+                "F1_ALLOW_DEFAULT_PRIORS is active"
+            ),
+            "production_eligible": False,
         }
     config, payload = load_simulation_config(path, samples=samples)
-    return config, {"source": str(path), **payload}
+    return config, {"source": str(path), "production_eligible": True, **payload}
 
 
 def _safe(value: Any) -> Any:
@@ -320,6 +353,40 @@ def _locations(limit: int) -> list[dict[str, Any]]:
     return _safe(output)
 
 
+def _record_live_prediction(state: dict[str, Any], report: dict[str, Any], pace_status: str) -> str | None:
+    """Persist production predictions only when the strict model and capture manifest are present."""
+    model_path = _model_path()
+    manifest_path = _manifest_path()
+    if pace_status != "strict_model" or not model_path.exists() or not manifest_path.exists():
+        return None
+    cutoff = state.get("latest_provider_event_at") or state.get("updated_at")
+    if not isinstance(cutoff, str) or not cutoff:
+        return None
+    record = make_record(
+        event_id=str(state.get("session_key") or "unknown"),
+        forecast_origin="live_race_state",
+        model_id="strict_live_pace+race_simulator",
+        model_sha256=sha256_file(model_path),
+        features={
+            "session_key": state.get("session_key"),
+            "current_lap": state.get("current_lap"),
+            "state_updated_at": state.get("updated_at"),
+            "provider_cutoff_at": cutoff,
+            "state_sha256": sha256_json(state),
+        },
+        evidence_sha256=sha256_file(manifest_path),
+        cutoff_at=cutoff,
+        payload={
+            "analysis_kind": report.get("analysis_kind"),
+            "predictions": report.get("predictions"),
+            "pace_predictions": report.get("pace_predictions"),
+            "strategy_prior_source": report.get("strategy_prior_source"),
+        },
+    )
+    append_jsonl(_prediction_ledger_path(), record)
+    return record.prediction_id
+
+
 def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     state = _read_state()
     truth_audit = _trusted_live_audit(state)
@@ -327,6 +394,11 @@ def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(state, reliability_model)
     artifact = _load_artifact()
+    if artifact is None and not _env_flag("F1_ALLOW_PACE_FALLBACK", default=False):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict live pace model is unavailable; recent-lap fallback is disabled",
+        )
     try:
         if artifact is not None:
             report = combined_live_report(
@@ -367,6 +439,7 @@ def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     report["data_truth"] = truth_audit
     report["strategy_prior_source"] = prior_audit
     report["pace_status"] = pace_status
+    report["prediction_id"] = _record_live_prediction(state, report, pace_status)
     return _safe(report)
 
 
@@ -425,6 +498,73 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
 
 
 
+@app.get("/readyz")
+def readyz(_: None = Depends(_authorize)) -> JSONResponse:
+    state = _read_state()
+    truth = _trusted_live_audit(state)
+    missing = []
+    if _load_artifact() is None:
+        missing.append("strict_model")
+    if not _priors_path().exists():
+        missing.append("strategy_priors")
+    try:
+        evidence = _read_model_evidence()
+    except HTTPException:
+        missing.append("model_evidence")
+        evidence = None
+    if missing:
+        raise HTTPException(status_code=503, detail={"missing": missing})
+    return JSONResponse(_safe({
+        "ready": True,
+        "session_key": state.get("session_key"),
+        "current_lap": state.get("current_lap"),
+        "data_truth": truth,
+        "model_evidence_run": evidence.get("benchmark_run_id") if isinstance(evidence, dict) else None,
+    }))
+
+
+@app.get("/providerz")
+def providerz(_: None = Depends(_authorize)) -> JSONResponse:
+    state = _read_state()
+    manifest = _read_capture_manifest()
+    stream = manifest.get("stream") if isinstance(manifest.get("stream"), dict) else {}
+    quality = classify_live_quality(
+        state_age_s=_state_age_s(state),
+        provider_age_s=_age_s(state.get("latest_provider_event_at")),
+        connection_state=stream.get("connection_state"),
+        max_age_s=_max_live_age_s(),
+    )
+    status_code = 200 if quality.status == "LIVE" else 503
+    return JSONResponse(_safe({
+        "provider": "OpenF1",
+        "status": quality.status,
+        "reasons": list(quality.reasons),
+        "connection_state": stream.get("connection_state"),
+        "last_message_age_s": _age_s(stream.get("last_message_at")),
+        "provider_event_age_s": _age_s(state.get("latest_provider_event_at")),
+    }), status_code=status_code)
+
+
+@app.get("/modelz")
+def modelz(_: None = Depends(_authorize)) -> JSONResponse:
+    artifact = _load_artifact()
+    if artifact is None:
+        raise HTTPException(status_code=503, detail="Strict live pace model is unavailable")
+    evidence = _read_model_evidence()
+    return JSONResponse(_safe({
+        "ready": True,
+        "live_pace_model": {
+            "artifact_schema_version": artifact.get("schema_version") if isinstance(artifact, dict) else None,
+            "evidence_scope": "strict live pace artifact; separate from race-outcome benchmark evidence",
+        },
+        "race_outcome_model_evidence": {
+            "evidence_kind": evidence.get("evidence_kind"),
+            "sealed_test_events": evidence.get("sealed_test_events"),
+            "benchmark_run_id": evidence.get("benchmark_run_id"),
+        },
+    }))
+
+
 @app.websocket("/v1/ws")
 async def live_socket(websocket: WebSocket) -> None:
     expected = os.environ.get("F1_API_TOKEN")
@@ -465,6 +605,25 @@ async def live_socket(websocket: WebSocket) -> None:
         return
 
 
+@app.get("/v1/race-control")
+def race_control_summary(_: None = Depends(_authorize)) -> JSONResponse:
+    state = _read_state()
+    normalized = state.get("track_state")
+    if normalized not in STATES:
+        normalized = "UNKNOWN"
+    return JSONResponse(_safe({
+        "schema_version": 1,
+        "state": normalized,
+        "changed_at": state.get("track_state_changed_at"),
+        "message": state.get("track_state_message"),
+        "raw": {
+            "session_status": state.get("status"),
+            "flag": state.get("flag"),
+            "safety_car": state.get("safety_car"),
+        },
+    }))
+
+
 @app.get("/v1/metrics")
 def metrics(_: None = Depends(_authorize)) -> JSONResponse:
     state = _read_state()
@@ -488,6 +647,25 @@ def live(
 ) -> JSONResponse:
     return JSONResponse(_live_report(total_laps, samples))
 
+
+
+@app.get("/v1/predictions/history")
+def prediction_history(
+    limit: int = Query(default=200, ge=1, le=2000),
+    _: None = Depends(_authorize),
+) -> JSONResponse:
+    rows: list[dict[str, Any]] = []
+    for line in reversed(_tail_lines(_prediction_ledger_path(), max_bytes=8 * 1024 * 1024)):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("prediction_id"):
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+    rows.reverse()
+    return JSONResponse(_safe({"count": len(rows), "predictions": rows}))
 
 
 @app.get("/v1/telemetry")
@@ -524,6 +702,11 @@ def strategy(
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(state, reliability_model)
     artifact = _load_artifact()
+    if artifact is None and not _env_flag("F1_ALLOW_PACE_FALLBACK", default=False):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict live pace model is unavailable; recent-lap strategy fallback is disabled",
+        )
     try:
         if artifact is not None:
             scenarios = combined_pit_windows(

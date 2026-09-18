@@ -3,12 +3,12 @@ name: Sealed model evidence
 on:
   workflow_dispatch:
   push:
-    branches: [main, feat/production-readiness-v1]
+    branches: [main]
     paths:
-      - '.github/workflows/model-evidence.yml'
+      - '.release-trigger'
 permissions:
-  contents: read
   actions: read
+  contents: read
 concurrency:
   group: sealed-model-evidence-${{ github.ref }}
   cancel-in-progress: true
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,28 +40,75 @@ jobs:
             --output reports/model-release/release \
             --test-events 12 --tuning-events 8 --calibration-events 6 --min-fit-events 30 \
             --modern-models hist_gradient_boosting,extra_trees,xgboost,lightgbm,catboost
-      - name: Download real data-truth evidence
+      - name: Build deployable model evidence
+        run: |
+          python -m f1_research.model_evidence \
+            --benchmark-dir reports/model-release/release/benchmark \
+            --output reports/model-release/release/model_evidence.json
+      - name: Verify sealed release contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from f1_research.model_registry import load_manifest, sha256_file
+
+          root = Path("reports/model-release/release")
+          release = json.loads((root / "release.json").read_text())
+          report = json.loads((root / "benchmark/report.json").read_text())
+          manifest = load_manifest(root / "model_manifest.json", model_path=root / "model.joblib")
+          assert report["schema_version"] == 2
+          assert report["audit"]["test_updates_model"] is False
+          assert report["winner_calibration"], "missing calibration/ECE evidence"
+          live_evidence = json.loads((root / "model_evidence.json").read_text())
+          assert live_evidence["winner_calibration"], "deployable evidence lost calibration data"
+          assert release["model_training_blocks"] == ["fit", "tuning"]
+          assert release["calibration_used_for_model_fit"] is False
+          assert manifest.benchmark_run_id == report["run_id"]
+          assert manifest.calibration_sha256 == sha256_file(root / "calibration.json")
+          assert manifest.feature_schema_sha256 == sha256_file(root / "feature_schema.json")
+          assert manifest.training_data_sha256 == sha256_file(root / "training_features.csv")
+          test = set(report["audit"]["split"]["test"])
+          assert {row["event_id"] for row in report["predictions"]} == test
+          print("sealed release contract verified")
+          PY
+      - name: Resolve same-revision real data and replay evidence
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          gh run download 35284249763 --repo "${{ github.repository }}" \
-            --name data-truth-matrix-35284249763 --dir reports/final/data-truth
-      - name: Download real replay evidence
-        env:
-          GH_TOKEN: ${{ github.token }}
+          data_run=""
+          replay_run=""
+          for attempt in $(seq 1 180); do
+            data_run="$(gh run list --repo "$REPO" --workflow 'Real provider data-truth audit' --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+            replay_run="$(gh run list --repo "$REPO" --workflow 'Historical replay evidence' --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+            if [ -n "$data_run" ] && [ -n "$replay_run" ]; then
+              break
+            fi
+            echo "Waiting for same-revision provider/replay evidence (attempt $attempt/180)"
+            sleep 30
+          done
+          test -n "$data_run" || { echo "No successful same-revision real data-truth run"; exit 1; }
+          test -n "$replay_run" || { echo "No successful same-revision real replay run"; exit 1; }
+          mkdir -p reports/final-evidence/data reports/final-evidence/replay
+          gh run download "$data_run" --repo "$REPO" --pattern 'data-truth-matrix-*' --dir reports/final-evidence/data
+          gh run download "$replay_run" --repo "$REPO" --pattern 'real-replay-*' --dir reports/final-evidence/replay
+      - name: Run final production evidence gate
         run: |
-          gh run download 35284327579 --repo "${{ github.repository }}" \
-            --name real-replay-2025-australia-35284327579 --dir reports/final/replay
-      - name: Run final production gate
-        run: |
+          truth="$(find reports/final-evidence/data -name data_truth_matrix.json -type f -print -quit)"
+          replay="$(find reports/final-evidence/replay -name events.jsonl -type f -print -quit)"
+          root="reports/model-release/release"
+          test -f "$truth" && test -f "$replay"
           f1-production-check \
-            --data-truth reports/final/data-truth/data_truth_matrix.json \
-            --benchmark reports/model-release/release/benchmark/report.json \
-            --manifest reports/model-release/release/model_manifest.json \
-            --model reports/model-release/release/model.joblib \
-            --calibration reports/model-release/release/calibration.json \
-            --replay-capture reports/final/replay/source/events.jsonl \
-            --output reports/final/production-readiness.json
+            --data-truth "$truth" \
+            --benchmark "$root/benchmark/report.json" \
+            --manifest "$root/model_manifest.json" \
+            --model "$root/model.joblib" \
+            --calibration "$root/calibration.json" \
+            --feature-schema "$root/feature_schema.json" \
+            --training-data "$root/training_features.csv" \
+            --replay-capture "$replay" \
+            --expected-git-sha "$GITHUB_SHA" \
+            --output reports/model-release/PRODUCTION_READINESS.json
       - uses: actions/upload-artifact@v4
         with:
           name: sealed-model-release-${{ github.run_id }}

@@ -92,6 +92,15 @@ type TelemetrySample = {
   drs?: number | null;
 };
 
+type PredictionLedgerRow = {
+  prediction_id: string;
+  created_at?: string;
+  cutoff_at?: string;
+  payload?: {
+    predictions?: RacePrediction[];
+  };
+};
+
 type StrategyScenario = RacePrediction & {
   pit_in_laps: number;
   compound: string;
@@ -207,6 +216,7 @@ export default function RaceIntelligence() {
   const [strategy, setStrategy] = useState<StrategyReport | null>(null);
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [strategyError, setStrategyError] = useState<string | null>(null);
+  const [predictionHistory, setPredictionHistory] = useState<PredictionLedgerRow[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -307,6 +317,24 @@ export default function RaceIntelligence() {
     return () => { active = false; if (timer) clearTimeout(timer); };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pollHistory = async () => {
+      try {
+        const response = await fetch("/api/predictions?limit=250", { cache: "no-store" });
+        const payload = await response.json();
+        if (response.ok && active) {
+          setPredictionHistory(Array.isArray(payload?.predictions) ? payload.predictions : []);
+        }
+      } finally {
+        if (active) timer = setTimeout(pollHistory, 5000);
+      }
+    };
+    void pollHistory();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, []);
+
   const predictionByDriver = useMemo(
     () => new Map((report?.predictions || []).map((row) => [row.driver_number, row])),
     [report],
@@ -321,6 +349,9 @@ export default function RaceIntelligence() {
   const tone = liveTone(age);
   const predictions = [...(report?.predictions || [])].sort((a, b) => b.win_probability - a.win_probability);
   const weather = report?.state?.weather || {};
+  const selectedWinHistory = predictionHistory
+    .map((entry) => entry.payload?.predictions?.find((row) => row.driver_number === selectedDriver)?.win_probability)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
 
   const runStrategy = async () => {
     if (selectedDriver === null) return;
@@ -434,6 +465,11 @@ export default function RaceIntelligence() {
                 ))}
                 {!predictions.length && <div className="empty-state compact">Waiting for enough live pace + position observations.</div>}
               </div>
+            </div>
+            <div className="panel probability-panel">
+              <div className="panel-head"><div><span className="kicker">IMMUTABLE LEDGER</span><h2>{selected ? driverLabel(selected) : "Driver"} win timeline</h2></div><span className="panel-note">{predictionHistory.length} persisted forecasts</span></div>
+              <Sparkline values={selectedWinHistory} />
+              <p className="footnote">Each point comes from the append-only prediction ledger and is tied to model, feature and provider-evidence SHA-256 provenance.</p>
             </div>
             <div className="metric-grid">
               <div className="metric-card"><span>Track</span><strong>{weather.track_temperature_c != null ? `${weather.track_temperature_c}°C` : "—"}</strong></div>

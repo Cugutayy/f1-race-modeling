@@ -298,6 +298,41 @@ def benchmark_v2(
     return pd.DataFrame(metrics), pd.DataFrame(predictions), audit
 
 
+def _winner_calibration(predictions: pd.DataFrame, bins: int = 10) -> list[dict[str, Any]]:
+    """Reliability/ECE for mutually-exclusive race winner probabilities."""
+    if bins < 2:
+        raise ValueError("bins must be >= 2")
+    required = {"model", "actual_position", "win_probability"}
+    if not required.issubset(predictions.columns):
+        raise ValueError("winner calibration requires model, actual_position and win_probability")
+    output = []
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    for model_name, group in predictions.groupby("model", sort=True):
+        probability_values = group["win_probability"].to_numpy(dtype=float)
+        outcomes = (group["actual_position"].to_numpy(dtype=int) == 1).astype(float)
+        if np.any(~np.isfinite(probability_values)) or np.any((probability_values < 0) | (probability_values > 1)):
+            raise ValueError(f"invalid winner probabilities for {model_name}")
+        assignments = np.minimum(np.digitize(probability_values, edges[1:-1], right=False), bins - 1)
+        ece = 0.0
+        reliability = []
+        for index in range(bins):
+            mask = assignments == index
+            if not mask.any():
+                continue
+            mean_probability = float(probability_values[mask].mean())
+            observed_rate = float(outcomes[mask].mean())
+            weight = float(mask.mean())
+            ece += weight * abs(mean_probability - observed_rate)
+            reliability.append({
+                "bin": index,
+                "count": int(mask.sum()),
+                "mean_probability": mean_probability,
+                "observed_rate": observed_rate,
+            })
+        output.append({"model": str(model_name), "winner_ece": float(ece), "reliability": reliability})
+    return output
+
+
 def save_v2_report(
     frame: pd.DataFrame,
     metrics: pd.DataFrame,
@@ -309,7 +344,7 @@ def save_v2_report(
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     summary = metrics.groupby("model", sort=True)[
-        ["position_mae", "winner_log_loss", "winner_brier", "winner_accuracy", "podium_recall"]
+        ["position_mae", "winner_log_loss", "winner_brier", "winner_accuracy", "podium_recall", "spearman_rank", "kendall_rank", "ndcg"]
     ].mean().reset_index()
     canonical = validate(frame).to_csv(index=False)
     report = {
@@ -319,6 +354,7 @@ def save_v2_report(
         "test_events": len(set(audit["split"]["test"])),
         "run_id": hashlib.sha256((canonical + predictions.to_csv(index=False)).encode()).hexdigest()[:16],
         "summary": summary.to_dict("records"),
+        "winner_calibration": _winner_calibration(predictions),
         "metrics": metrics.to_dict("records"),
         "predictions": predictions.to_dict("records"),
         "audit": audit,

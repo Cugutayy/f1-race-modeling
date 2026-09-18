@@ -45,6 +45,11 @@ def _scoped_live_report(total_laps: int, samples: int) -> dict:
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(simulation_state, reliability_model)
     artifact = base._load_artifact()
+    if artifact is None and not base._env_flag("F1_ALLOW_PACE_FALLBACK", default=False):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict live pace model is unavailable; recent-lap fallback is disabled",
+        )
 
     try:
         if artifact is not None:
@@ -91,6 +96,7 @@ def _scoped_live_report(total_laps: int, samples: int) -> dict:
     report["strategy_prior_source"] = prior_audit
     report["pace_status"] = pace_status
     report["simulation_scope"] = simulation_state.get("simulation_scope")
+    report["prediction_id"] = base._record_live_prediction(state, report, pace_status)
     return base._safe(report)
 
 
@@ -122,6 +128,11 @@ def strategy(
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(simulation_state, reliability_model)
     artifact = base._load_artifact()
+    if artifact is None and not base._env_flag("F1_ALLOW_PACE_FALLBACK", default=False):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict live pace model is unavailable; recent-lap strategy fallback is disabled",
+        )
     try:
         if artifact is not None:
             scenarios = combined_pit_windows(

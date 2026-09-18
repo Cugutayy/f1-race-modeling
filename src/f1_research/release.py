@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -11,15 +10,12 @@ from typing import Any
 import joblib
 import pandas as pd
 
+from .benchmark_evidence import save_uncertainty
 from .data import validate
 from .evaluation_v2 import benchmark_v2, save_v2_report
 from .features import FEATURES, build_features
 from .model_registry import ModelManifest, sha256_file, write_manifest
 from .modern_models import CandidateSpec, fit_selected
-
-
-def _sha256_bytes(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
 
 
 def _git_sha() -> str:
@@ -52,22 +48,31 @@ def build_release(
     )
     benchmark_dir = output / "benchmark"
     report = save_v2_report(clean, metrics, predictions, audit, benchmark_dir)
+    uncertainty_dir = benchmark_dir / "evidence"
+    uncertainty = save_uncertainty(metrics, uncertainty_dir, baseline="qualifying_order", samples=10000, seed=42)
 
     selected = audit["selected_modern"]
     spec = CandidateSpec(selected["name"], selected["params"])
     features = build_features(clean)
-    train_ids = audit["split"]["fit"] + audit["split"]["tuning"] + audit["split"]["calibration"]
+    # Keep release model bytes identical in training scope to the model evaluated on the sealed test.
+    # Calibration events tune probability temperature only; fitting on them here would create an
+    # unevaluated model artifact and falsely attach sealed-test evidence to different model bytes.
+    train_ids = audit["split"]["fit"] + audit["split"]["tuning"]
     train = features[features.event_id.isin(train_ids)].copy()
     model = fit_selected(train, spec)
     model_path = output / "model.joblib"
     joblib.dump(model, model_path)
 
-    feature_schema_sha = _sha256_bytes(
-        json.dumps(FEATURES, separators=(",", ":"), sort_keys=False).encode()
+    feature_schema_path = output / "feature_schema.json"
+    feature_schema_path.write_text(
+        json.dumps(FEATURES, separators=(",", ":"), sort_keys=False),
+        encoding="utf-8",
     )
-    training_data_sha = _sha256_bytes(
-        train.sort_values(["date", "event_id", "driver"]).to_csv(index=False).encode()
-    )
+    training_data_path = output / "training_features.csv"
+    training_snapshot = train.sort_values(["date", "event_id", "driver"])
+    training_data_path.write_text(training_snapshot.to_csv(index=False), encoding="utf-8")
+    feature_schema_sha = sha256_file(feature_schema_path)
+    training_data_sha = sha256_file(training_data_path)
     calibration_payload = {
         "schema_version": 1,
         "temperatures": audit["temperatures"],
@@ -96,9 +101,16 @@ def build_release(
         "model": str(model_path),
         "manifest": str(manifest_path),
         "calibration": str(calibration_path),
+        "feature_schema": str(feature_schema_path),
+        "training_data": str(training_data_path),
         "model_id": manifest.model_id,
         "sealed_test_events": report["test_events"],
+        "model_training_blocks": ["fit", "tuning"],
+        "calibration_used_for_model_fit": False,
         "run_id": report["run_id"],
+        "uncertainty": str(uncertainty_dir / "uncertainty.json"),
+        "uncertainty_unit": uncertainty["unit"],
+        "uncertainty_bootstrap_samples": uncertainty["bootstrap_samples"],
     }
     (output / "release.json").write_text(json.dumps(release, indent=2), encoding="utf-8")
     return release

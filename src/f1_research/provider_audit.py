@@ -26,6 +26,7 @@ from .provider_reconciliation import (
     normalize_openf1_results,
     reconcile_results,
 )
+from .revision import current_git_sha
 
 
 def _json_sha256(value: Any) -> str:
@@ -123,16 +124,19 @@ def _failure_report(
     openf1_session_key: int,
     provider_errors: dict[str, str],
     raw_snapshots: dict[str, Any],
+    producer_git_sha: str | None = None,
 ) -> dict[str, Any]:
+    producer_git_sha = producer_git_sha or current_git_sha(required=True)
     return {
         "schema_version": 4,
-        "artifact_schema_version": 1,
+        "artifact_schema_version": 2,
         "reconciliation_schema_version": None,
         "kind": "cross_provider_completed_race_reconciliation",
         "year": int(year),
         "round": int(round_number),
         "openf1_session_key": int(openf1_session_key),
         "retrieved_at": datetime.now(UTC).isoformat(),
+        "producer_git_sha": producer_git_sha,
         "passed": False,
         "verification_status": "FAIL",
         "hard_mismatch_count": len(provider_errors),
@@ -168,6 +172,7 @@ def audit_completed_race(
     raw_dir = output / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
 
+    producer_git_sha = current_git_sha(required=True)
     raw: dict[str, Any] = {}
     provider_errors: dict[str, str] = {}
 
@@ -234,13 +239,14 @@ def audit_completed_race(
 
     if len(normalized) == 3 and event_identity["verified"]:
         report = reconcile_results(normalized)
-        report["artifact_schema_version"] = 1
+        report["artifact_schema_version"] = 2
         report["reconciliation_schema_version"] = report["schema_version"]
         report.update({
             "year": int(year),
             "round": int(round_number),
             "openf1_session_key": int(openf1_session_key),
             "retrieved_at": datetime.now(UTC).isoformat(),
+            "producer_git_sha": producer_git_sha,
             "provider_errors": provider_errors,
             "event_identity": event_identity,
             "event_metadata": event_identity["providers"],
@@ -262,6 +268,7 @@ def audit_completed_race(
             openf1_session_key=openf1_session_key,
             provider_errors=provider_errors,
             raw_snapshots=raw,
+            producer_git_sha=producer_git_sha,
         )
         report["event_identity"] = event_identity
         report["event_metadata"] = event_identity["providers"]

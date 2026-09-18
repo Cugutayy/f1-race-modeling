@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .revision import validate_git_sha
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -31,9 +33,10 @@ class ModelManifest:
     def validate(self) -> None:
         if self.schema_version != 1:
             raise ValueError("unsupported model manifest schema")
-        for name in ("model_id", "trained_until", "benchmark_run_id", "git_sha"):
+        for name in ("model_id", "trained_until", "benchmark_run_id"):
             if not str(getattr(self, name)).strip():
                 raise ValueError(f"missing model manifest field: {name}")
+        validate_git_sha(self.git_sha, field="git_sha")
         for name in ("model_sha256", "feature_schema_sha256", "training_data_sha256", "calibration_sha256"):
             value = getattr(self, name)
             if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value.lower()):

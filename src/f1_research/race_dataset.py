@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .openf1_live import OpenF1Client
+from .value_parsing import strict_optional_bool
 
 
 def _frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -144,6 +145,10 @@ def build_contextual_laps(
             else np.nan
         )
         duration = row.get("lap_duration")
+        pit_out = strict_optional_bool(
+            row.get("is_pit_out_lap"),
+            field="openf1.laps.is_pit_out_lap",
+        )
         records.append({
             "session_key": int(row["session_key"]),
             "driver_number": number,
@@ -155,7 +160,7 @@ def build_contextual_laps(
             "sector_1_s": row.get("duration_sector_1"),
             "sector_2_s": row.get("duration_sector_2"),
             "sector_3_s": row.get("duration_sector_3"),
-            "is_pit_out_lap": bool(row.get("is_pit_out_lap", False)),
+            "is_pit_out_lap": pit_out,
             "is_pit_lap": (number, lap_number) in pit_keys,
             "stint_number": np.nan if stint is None else stint.get("stint_number"),
             "compound": None if stint is None else stint.get("compound"),
@@ -172,7 +177,7 @@ def build_contextual_laps(
         np.isfinite(result["lap_duration"])
         & result["lap_duration"].gt(0)
         & result["lap_number"].gt(1)
-        & ~result["is_pit_out_lap"]
+        & result["is_pit_out_lap"].eq(False)
         & ~result["is_pit_lap"]
     )
     return result.sort_values(["date_start", "driver_number", "lap_number"]).reset_index(drop=True)
