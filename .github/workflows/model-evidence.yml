@@ -39,6 +39,28 @@ jobs:
             --output reports/model-release/release \
             --test-events 12 --tuning-events 8 --calibration-events 6 --min-fit-events 30 \
             --modern-models hist_gradient_boosting,extra_trees,xgboost,lightgbm,catboost
+      - name: Verify sealed release contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from f1_research.model_registry import load_manifest, sha256_file
+
+          root = Path("reports/model-release/release")
+          release = json.loads((root / "release.json").read_text())
+          report = json.loads((root / "benchmark/report.json").read_text())
+          manifest = load_manifest(root / "model_manifest.json", model_path=root / "model.joblib")
+          assert report["schema_version"] == 2
+          assert report["audit"]["test_updates_model"] is False
+          assert report["winner_calibration"], "missing calibration/ECE evidence"
+          assert release["model_training_blocks"] == ["fit", "tuning"]
+          assert release["calibration_used_for_model_fit"] is False
+          assert manifest.benchmark_run_id == report["run_id"]
+          assert manifest.calibration_sha256 == sha256_file(root / "calibration.json")
+          test = set(report["audit"]["split"]["test"])
+          assert {row["event_id"] for row in report["predictions"]} == test
+          print("sealed release contract verified")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: sealed-model-release-${{ github.run_id }}
