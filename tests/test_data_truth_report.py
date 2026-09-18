@@ -8,6 +8,7 @@ def test_report_preserves_evidence_gaps_and_hash():
         "pass_with_gaps_count": 1,
         "fail_count": 0,
         "hard_mismatch_count": 0,
+        "audit_gap_count": 27,
         "provider_error_count": 0,
         "events": [{
             "year": 2025,
@@ -15,7 +16,8 @@ def test_report_preserves_evidence_gaps_and_hash():
             "openf1_session_key": 9693,
             "verification_status": "PASS_WITH_GAPS",
             "hard_mismatch_count": 0,
-            "insufficient_hard_count": 27,
+            "insufficient_hard_count": 0,
+            "audit_gap_count": 27,
             "insufficient_secondary_count": 80,
             "reconciliation_performed": True,
             "source_sha256": "a" * 64,
@@ -23,7 +25,8 @@ def test_report_preserves_evidence_gaps_and_hash():
     }
     report = render_markdown(matrix)
     assert "PASS_WITH_GAPS" in report
-    assert "| 27 | 80 | yes |" in report
+    assert "| 0 | 27 | 80 | yes |" in report
+    assert "Audit capability gaps: 27" in report
     assert "a" * 64 in report
     assert "never converted to zero or false" in report
     assert "official FIA certification" in report
