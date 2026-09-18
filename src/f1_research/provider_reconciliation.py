@@ -789,7 +789,7 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status != 404:
                 raise
-            collections[endpoint] = []
+            collections[endpoint] = None
             optional_collection_errors[endpoint] = {
                 "error_type": type(exc).__name__,
                 "http_status": int(status),
