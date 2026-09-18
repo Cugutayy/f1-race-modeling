@@ -1,6 +1,7 @@
 import json
 
 import pytest
+
 from f1_research import live_api
 
 
