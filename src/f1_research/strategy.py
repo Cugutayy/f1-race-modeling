@@ -419,8 +419,7 @@ def simulate(
         for j, pit_offset in enumerate(pit_offsets):
             if pit_offset is None or pit_done[j] or lap != pit_offset:
                 continue
-            pit_loss = rng.normal(config.pit_loss_mean_s, config.pit_loss_sd_s, n)
-            pit_loss = np.maximum(8.0, pit_loss)
+            pit_loss = pit_loss_draws[lap, :, j].copy()
             pit_loss[sc_now] *= config.safety_car_pit_loss_multiplier
             total[:, j] += pit_loss
             compounds[j] = next_compounds[j]
