@@ -83,6 +83,26 @@ def test_production_gate_can_pass_complete_evidence(tmp_path):
     assert result["production_ready"] is True
 
 
+def test_production_gate_rejects_incomplete_hard_provider_evidence(tmp_path):
+    truth, benchmark, manifest, model, calibration, feature_schema, training_data, replay = _files(tmp_path)
+    payload = json.loads(truth.read_text())
+    payload["events"][0]["verification_status"] = "PASS_WITH_GAPS"
+    payload["events"][0]["insufficient_hard_count"] = 1
+    truth.write_text(json.dumps(payload))
+    result = run_checks(
+        data_truth=truth,
+        benchmark=benchmark,
+        manifest=manifest,
+        model=model,
+        calibration=calibration,
+        feature_schema=feature_schema,
+        training_data=training_data,
+        replay_capture=replay,
+    )
+    assert result["production_ready"] is False
+    assert "hard-field evidence" in result["checks"]["data_truth"]["detail"]
+
+
 def test_production_gate_rejects_failed_real_audit(tmp_path):
     truth, benchmark, manifest, model, calibration, feature_schema, training_data, replay = _files(tmp_path, status="FAIL")
     result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, calibration=calibration,
