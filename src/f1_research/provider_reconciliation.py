@@ -527,12 +527,16 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
     providers = sorted(normalized)
     mismatches: list[Mismatch] = []
     insufficient_hard: list[dict[str, Any]] = []
+    audit_gaps: list[dict[str, Any]] = []
     insufficient_secondary: list[dict[str, Any]] = []
 
     for provider in providers:
-        failures, missing = _provider_integrity(provider, normalized[provider])
+        failures, missing, provider_audit_gaps = _provider_integrity(
+            provider, normalized[provider]
+        )
         mismatches.extend(failures)
         insufficient_hard.extend(missing)
+        audit_gaps.extend(provider_audit_gaps)
 
     for i, provider_a in enumerate(providers):
         for provider_b in providers[i + 1:]:
