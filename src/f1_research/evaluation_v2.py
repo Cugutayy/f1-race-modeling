@@ -309,7 +309,7 @@ def save_v2_report(
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     summary = metrics.groupby("model", sort=True)[
-        ["position_mae", "winner_log_loss", "winner_brier", "winner_accuracy", "podium_recall"]
+        ["position_mae", "winner_log_loss", "winner_brier", "winner_accuracy", "podium_recall", "spearman_rank", "kendall_rank", "ndcg"]
     ].mean().reset_index()
     canonical = validate(frame).to_csv(index=False)
     report = {
