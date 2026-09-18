@@ -14,8 +14,8 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     truth.write_text(json.dumps({"matrix_schema_version": 1, "events": [{"verification_status": status} for _ in range(12)]}))
     benchmark = tmp_path / "benchmark.json"
     benchmark.write_text(json.dumps({
-        "data_kind": "historical", "run_id": "sealed-1", "test_events": test_events,
-        "predictions": [{"driver": "VER"}], "metrics": [{"position_mae": 1.0}],
+        "schema_version": 2, "data_kind": "historical", "run_id": "sealed-1", "test_events": test_events,
+        "predictions": [{"event_id": f"T{i}", "driver": "VER"} for i in range(test_events)], "metrics": [{"position_mae": 1.0}],
         "audit": {"test_updates_model": False, "split": {
             "fit": ["E1"], "tuning": ["E2"], "calibration": ["E3"],
             "test": [f"T{i}" for i in range(test_events)],
@@ -61,3 +61,25 @@ def test_production_gate_rejects_tampered_model(tmp_path):
     result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model, calibration=calibration, replay_capture=replay)
     assert result["production_ready"] is False
     assert result["checks"]["model_integrity"]["passed"] is False
+
+
+def test_production_gate_rejects_overlapping_benchmark_blocks(tmp_path):
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
+    payload = json.loads(benchmark.read_text())
+    payload["audit"]["split"]["calibration"] = ["T0"]
+    benchmark.write_text(json.dumps(payload))
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model,
+                        calibration=calibration, replay_capture=replay)
+    assert result["production_ready"] is False
+    assert "overlap" in result["checks"]["benchmark"]["detail"]
+
+
+def test_production_gate_rejects_predictions_outside_sealed_test(tmp_path):
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
+    payload = json.loads(benchmark.read_text())
+    payload["predictions"][0]["event_id"] = "LEAKED"
+    benchmark.write_text(json.dumps(payload))
+    result = run_checks(data_truth=truth, benchmark=benchmark, manifest=manifest, model=model,
+                        calibration=calibration, replay_capture=replay)
+    assert result["production_ready"] is False
+    assert "sealed test" in result["checks"]["benchmark"]["detail"]
