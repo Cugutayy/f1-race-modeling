@@ -95,15 +95,31 @@ def _max_live_age_s() -> float:
     return value
 
 
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    text = raw.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be an explicit boolean")
+
+
 def _require_live_stream() -> bool:
-    raw = os.environ.get("F1_REQUIRE_LIVE_STREAM", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return _env_flag("F1_REQUIRE_LIVE_STREAM", default=True)
 
 
 def _authorize(authorization: str | None = Header(default=None)) -> None:
     expected = os.environ.get("F1_API_TOKEN")
     if not expected:
-        return
+        if _env_flag("F1_ALLOW_UNAUTHENTICATED_API", default=False):
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="F1_API_TOKEN is not configured; unauthenticated API access is disabled",
+        )
     if authorization != f"Bearer {expected}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -221,12 +237,21 @@ def _load_artifact() -> dict[str, Any] | None:
 def _simulation_config(samples: int) -> tuple[SimulationConfig, dict[str, Any]]:
     path = _priors_path()
     if not path.exists():
+        if not _env_flag("F1_ALLOW_DEFAULT_PRIORS", default=False):
+            raise HTTPException(
+                status_code=503,
+                detail="Calibrated strategy priors are unavailable; built-in defaults are disabled",
+            )
         return SimulationConfig(samples=samples), {
             "source": "built_in_defaults",
-            "warning": "strategy_priors.json is unavailable",
+            "warning": (
+                "strategy_priors.json is unavailable; explicit research override "
+                "F1_ALLOW_DEFAULT_PRIORS is active"
+            ),
+            "production_eligible": False,
         }
     config, payload = load_simulation_config(path, samples=samples)
-    return config, {"source": str(path), **payload}
+    return config, {"source": str(path), "production_eligible": True, **payload}
 
 
 def _safe(value: Any) -> Any:
@@ -369,6 +394,11 @@ def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(state, reliability_model)
     artifact = _load_artifact()
+    if artifact is None and not _env_flag("F1_ALLOW_PACE_FALLBACK", default=False):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict live pace model is unavailable; recent-lap fallback is disabled",
+        )
     try:
         if artifact is not None:
             report = combined_live_report(
@@ -672,6 +702,11 @@ def strategy(
     reliability_model = prior_audit.get("reliability") if isinstance(prior_audit, dict) else None
     reliability_overrides = reliability_overrides_from_state(state, reliability_model)
     artifact = _load_artifact()
+    if artifact is None and not _env_flag("F1_ALLOW_PACE_FALLBACK", default=False):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict live pace model is unavailable; recent-lap strategy fallback is disabled",
+        )
     try:
         if artifact is not None:
             scenarios = combined_pit_windows(
