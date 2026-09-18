@@ -26,6 +26,9 @@ CORE_METRICS = (
     "winner_brier",
     "winner_accuracy",
     "podium_recall",
+    "spearman_rank",
+    "kendall_rank",
+    "ndcg",
 )
 
 
@@ -156,6 +159,7 @@ def build_model_evidence(
         "ensemble_weights": {
             str(key): _clean_number(value) for key, value in weights.items()
         } if weights is not None else None,
+        "winner_calibration": report.get("winner_calibration") if isinstance(report.get("winner_calibration"), list) else None,
         "models": [
             {"model": model, **all_models[model]}
             for model in preferred
