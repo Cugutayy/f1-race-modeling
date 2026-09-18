@@ -25,6 +25,8 @@ from .live_protocol import encode as encode_live_envelope
 from .live_protocol import envelope as live_envelope
 from .live_quality import classify as classify_live_quality
 from .monitoring import snapshot as monitoring_snapshot
+from .model_registry import sha256_file
+from .prediction_ledger import append_jsonl, make_record
 from .reliability import reliability_overrides_from_state
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
@@ -34,6 +36,7 @@ DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
 DEFAULT_MODEL = ROOT / "reports" / "local" / "lap-strict" / "next_lap_strict.joblib"
 DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-strict" / "strategy_priors.json"
 DEFAULT_EVIDENCE = ROOT / "reports" / "local" / "model_evidence.json"
+DEFAULT_PREDICTION_LEDGER = ROOT / "reports" / "local" / "live" / "predictions.jsonl"
 MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
@@ -73,6 +76,10 @@ def _priors_path() -> Path:
 
 def _evidence_path() -> Path:
     return _path("F1_MODEL_EVIDENCE_PATH", DEFAULT_EVIDENCE)
+
+
+def _prediction_ledger_path() -> Path:
+    return _path("F1_PREDICTION_LEDGER_PATH", DEFAULT_PREDICTION_LEDGER)
 
 
 
@@ -320,6 +327,39 @@ def _locations(limit: int) -> list[dict[str, Any]]:
     return _safe(output)
 
 
+def _record_live_prediction(state: dict[str, Any], report: dict[str, Any], pace_status: str) -> str | None:
+    """Persist production predictions only when the strict model and capture manifest are present."""
+    model_path = _model_path()
+    manifest_path = _manifest_path()
+    if pace_status != "strict_model" or not model_path.exists() or not manifest_path.exists():
+        return None
+    cutoff = state.get("latest_provider_event_at") or state.get("updated_at")
+    if not isinstance(cutoff, str) or not cutoff:
+        return None
+    record = make_record(
+        event_id=str(state.get("session_key") or "unknown"),
+        forecast_origin="live_race_state",
+        model_id="strict_live_pace+race_simulator",
+        model_sha256=sha256_file(model_path),
+        features={
+            "session_key": state.get("session_key"),
+            "current_lap": state.get("current_lap"),
+            "state_updated_at": state.get("updated_at"),
+            "provider_cutoff_at": cutoff,
+        },
+        evidence_sha256=sha256_file(manifest_path),
+        cutoff_at=cutoff,
+        payload={
+            "analysis_kind": report.get("analysis_kind"),
+            "predictions": report.get("predictions"),
+            "pace_predictions": report.get("pace_predictions"),
+            "strategy_prior_source": report.get("strategy_prior_source"),
+        },
+    )
+    append_jsonl(_prediction_ledger_path(), record)
+    return record.prediction_id
+
+
 def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     state = _read_state()
     truth_audit = _trusted_live_audit(state)
@@ -367,6 +407,7 @@ def _live_report(total_laps: int, samples: int) -> dict[str, Any]:
     report["data_truth"] = truth_audit
     report["strategy_prior_source"] = prior_audit
     report["pace_status"] = pace_status
+    report["prediction_id"] = _record_live_prediction(state, report, pace_status)
     return _safe(report)
 
 
