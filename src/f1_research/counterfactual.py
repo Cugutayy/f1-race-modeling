@@ -37,7 +37,7 @@ def pit_window(snapshot: dict[str, Any], *, total_laps: int, driver_number: int,
             strategy = Strategy(
                 pit_in_laps=offset,
                 next_compound=compound,
-                label=f"pit+{offset}:{compound}",
+                label=(f"pit-now:{compound}" if offset == 0 else f"pit+{offset}:{compound}"),
             )
             report = predict_from_state(
                 snapshot, total_laps,
