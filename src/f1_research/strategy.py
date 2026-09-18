@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 
 from .data_truth import validate_simulation_observations
+from .race_classification import classify_completed_laps
 from .tyre_calibration import DEFAULT_DEGRADATION, DEFAULT_PACE_DELTA, DEFAULT_PIT_AGE
 
 
@@ -116,6 +117,9 @@ class SimulationResult:
     position_p10: int
     position_p90: int
     dnf_probability: float
+    classified_probability: float
+    expected_completed_laps: float
+    expected_retirement_lap: float | None
     mean_remaining_time_s: float
 
 
