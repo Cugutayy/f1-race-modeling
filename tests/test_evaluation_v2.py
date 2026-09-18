@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from f1_research.demo import synthetic_history
-from f1_research.evaluation_v2 import benchmark_v2
+from f1_research.evaluation_v2 import _winner_calibration, benchmark_v2
 
 
 def test_v2_blocks_are_disjoint_and_probability_distributions_are_coherent():
@@ -23,7 +23,7 @@ def test_v2_blocks_are_disjoint_and_probability_distributions_are_coherent():
     assert set(metrics.event_id) == set(split["test"])
     assert metrics.model.nunique() == 6
     assert "rank_ensemble" in set(metrics.model)
-    assert np.isfinite(metrics[["position_mae", "winner_log_loss", "winner_brier"]]).all().all()
+    assert np.isfinite(metrics[["position_mae", "winner_log_loss", "winner_brier", "spearman_rank", "kendall_rank", "ndcg"]]).all().all()
 
     grouped = predictions.groupby(["event_id", "model"])
     for _, group in grouped:
@@ -97,3 +97,17 @@ def test_ensemble_can_be_disabled_without_changing_individual_model_protocol():
     assert audit["ensemble_enabled"] is False
     assert audit["ensemble_weights"] is None
     assert audit["ensemble_tuning"] == []
+
+
+def test_winner_calibration_ece_is_zero_for_perfect_extreme_forecasts():
+    import pandas as pd
+
+    predictions = pd.DataFrame([
+        {"model": "m", "actual_position": 1, "win_probability": 1.0},
+        {"model": "m", "actual_position": 2, "win_probability": 0.0},
+        {"model": "m", "actual_position": 1, "win_probability": 1.0},
+        {"model": "m", "actual_position": 3, "win_probability": 0.0},
+    ])
+    result = _winner_calibration(predictions, bins=5)
+    assert result[0]["winner_ece"] == pytest.approx(0.0)
+    assert sum(row["count"] for row in result[0]["reliability"]) == 4
