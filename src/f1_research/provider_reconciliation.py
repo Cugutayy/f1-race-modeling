@@ -35,7 +35,7 @@ FIELD_SEMANTICS = {
     "position": (
         "Provider-reported final/classified position. Some public providers leave position "
         "null for DNF/DNS/DSQ rows even when other sources publish a classification order. "
-        "That absence is recorded as insufficient evidence, not invented or majority-repaired."
+        "That absence is a coverage gap when at least two other providers agree; fewer than two comparable observations remain insufficient hard evidence."
     ),
     "laps": (
         "Jolpica Results.laps; OpenF1 session_result.number_of_laps; FastF1 Results.Laps "
@@ -429,77 +429,21 @@ def _position_required(row: ResultRow) -> bool:
     return row.status_class in POSITION_REQUIRED_STATUSES
 
 
-def _provider_integrity(
-    provider: str,
-    rows: list[ResultRow],
-) -> tuple[list[Mismatch], list[dict[str, Any]]]:
-    """Return hard integrity failures plus explicit hard-evidence gaps."""
+def _provider_integrity(provider: str, rows: list[ResultRow]) -> list[Mismatch]:
+    """Return provider-internal integrity failures without inventing missing values."""
     failures: list[Mismatch] = []
-    insufficient: list[dict[str, Any]] = []
     positions = [row.position for row in rows if row.position is not None]
-
     if len(positions) != len(set(positions)):
         failures.append(Mismatch(
-            provider,
-            provider,
-            None,
-            "classification_integrity",
-            positions,
-            None,
-            "hard",
+            provider, provider, None, "classification_integrity", positions, None, "hard",
             "provider has duplicate final positions",
         ))
     if positions and sorted(positions) != list(range(1, max(positions) + 1)):
         failures.append(Mismatch(
-            provider,
-            provider,
-            None,
-            "classification_integrity",
-            sorted(positions),
-            None,
-            "hard",
+            provider, provider, None, "classification_integrity", sorted(positions), None, "hard",
             "provider observed positions are not consecutive from 1 through max(position)",
         ))
-
-    for row in rows:
-        if row.position is None:
-            insufficient.append({
-                "provider": provider,
-                "driver_number": row.driver_number,
-                "field": "position",
-                "status_class": row.status_class,
-                "reason": (
-                    "provider omits final position for a classified finisher/lapped car"
-                    if _position_required(row)
-                    else "provider does not expose a final position for this non-finisher"
-                ),
-            })
-        if row.laps is None:
-            # Some providers omit completed-lap counts for DNS/DSQ/non-finishers.
-            # That is an evidence gap, not proof that the driver completed zero laps.
-            insufficient.append({
-                "provider": provider,
-                "driver_number": row.driver_number,
-                "field": "laps",
-                "status_class": row.status_class,
-                "reason": (
-                    "provider omits completed laps for a classified finisher/lapped car"
-                    if _result_class(row) in {"completed", "classified_lapped"}
-                    else "provider does not expose completed laps for this non-finisher"
-                ),
-            })
-        if row.status_class is None:
-            failures.append(Mismatch(
-                provider,
-                provider,
-                row.driver_number,
-                "status_class",
-                None,
-                None,
-                "hard",
-                "provider is missing normalized classification status",
-            ))
-    return failures, insufficient
+    return failures
 
 
 def _row_index(rows: Iterable[ResultRow]) -> dict[int, ResultRow]:
@@ -515,8 +459,20 @@ def _values_equal(field: str, value_a: Any, value_b: Any) -> bool:
     return value_a == value_b
 
 
+def _hard_value(row: ResultRow, field: str) -> Any:
+    if field == "position":
+        return row.position
+    if field == "laps":
+        return row.laps
+    if field == "result_class":
+        return _result_class(row)
+    if field == "start_status":
+        return _start_status(row)
+    raise ValueError(f"Unsupported hard field: {field}")
+
+
 def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, Any]:
-    """Compare normalized provider results without repairing disagreements."""
+    """Compare provider evidence without imputing, repairing, or majority-voting truth."""
     if len(provider_rows) < 2:
         raise ValueError("At least two providers are required for reconciliation")
 
@@ -524,119 +480,67 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
     providers = sorted(normalized)
     mismatches: list[Mismatch] = []
     insufficient_hard: list[dict[str, Any]] = []
+    hard_coverage_gaps: list[dict[str, Any]] = []
     insufficient_secondary: list[dict[str, Any]] = []
 
+    indexes = {provider: _row_index(rows) for provider, rows in normalized.items()}
     for provider in providers:
-        failures, missing = _provider_integrity(provider, normalized[provider])
-        mismatches.extend(failures)
-        insufficient_hard.extend(missing)
+        mismatches.extend(_provider_integrity(provider, normalized[provider]))
 
-    for i, provider_a in enumerate(providers):
-        for provider_b in providers[i + 1:]:
-            left = _row_index(normalized[provider_a])
-            right = _row_index(normalized[provider_b])
-            left_numbers, right_numbers = set(left), set(right)
-
-            for number in sorted(left_numbers - right_numbers):
+    all_numbers = sorted(set().union(*(set(index) for index in indexes.values())))
+    for number in all_numbers:
+        present = [provider for provider in providers if number in indexes[provider]]
+        missing_driver = [provider for provider in providers if number not in indexes[provider]]
+        if missing_driver:
+            for provider in missing_driver:
                 mismatches.append(Mismatch(
-                    provider_a,
-                    provider_b,
-                    number,
-                    "driver_presence",
-                    True,
-                    False,
-                    "hard",
-                    "driver exists only in first provider",
+                    ",".join(present), provider, number, "driver_presence", True, False, "hard",
+                    "driver is absent from one provider result set",
                 ))
-            for number in sorted(right_numbers - left_numbers):
-                mismatches.append(Mismatch(
-                    provider_a,
-                    provider_b,
-                    number,
-                    "driver_presence",
-                    False,
-                    True,
-                    "hard",
-                    "driver exists only in second provider",
-                ))
+            continue
 
-            for number in sorted(left_numbers & right_numbers):
-                a, b = left[number], right[number]
+        rows = {provider: indexes[provider][number] for provider in providers}
+        for field in HARD_FIELDS:
+            observed = {
+                provider: _hard_value(row, field)
+                for provider, row in rows.items()
+                if _hard_value(row, field) is not None
+            }
+            missing = [provider for provider in providers if provider not in observed]
+            if len(observed) < 2:
+                insufficient_hard.append({
+                    "driver_number": number,
+                    "field": field,
+                    "observed_values": observed,
+                    "observed_providers": sorted(observed),
+                    "missing_providers": missing,
+                    "reason": "fewer than two providers expose comparable hard-field evidence",
+                })
+                continue
 
-                if a.position is None or b.position is None:
-                    insufficient_hard.append({
-                        "provider_a": provider_a,
-                        "provider_b": provider_b,
-                        "driver_number": number,
-                        "field": "position",
-                        "value_a": a.position,
-                        "value_b": b.position,
-                        "status_a": a.status_class,
-                        "status_b": b.status_class,
-                        "reason": "at least one provider does not expose comparable non-finisher position evidence",
-                    })
-                elif a.position != b.position:
-                    mismatches.append(Mismatch(
-                        provider_a,
-                        provider_b,
-                        number,
-                        "position",
-                        a.position,
-                        b.position,
-                        "hard",
-                        "provider values disagree",
-                    ))
-
-                if a.laps is None or b.laps is None:
-                    insufficient_hard.append({
-                        "provider_a": provider_a,
-                        "provider_b": provider_b,
-                        "driver_number": number,
-                        "field": "laps",
-                        "value_a": a.laps,
-                        "value_b": b.laps,
-                        "status_a": a.status_class,
-                        "status_b": b.status_class,
-                        "reason": "at least one provider lacks completed-lap evidence",
-                    })
-                elif a.laps != b.laps:
-                    mismatches.append(Mismatch(
-                        provider_a,
-                        provider_b,
-                        number,
-                        "laps",
-                        a.laps,
-                        b.laps,
-                        "hard",
-                        "provider values disagree",
-                    ))
-
-                for field, semantic in (("result_class", _result_class), ("start_status", _start_status)):
-                    value_a, value_b = semantic(a), semantic(b)
-                    if value_a is None or value_b is None:
-                        insufficient_hard.append({
-                            "provider_a": provider_a,
-                            "provider_b": provider_b,
-                            "driver_number": number,
-                            "field": field,
-                            "value_a": value_a,
-                            "value_b": value_b,
-                            "status_class_a": a.status_class,
-                            "status_class_b": b.status_class,
-                            "reason": "at least one provider lacks comparable semantic evidence",
-                        })
-                    elif value_a != value_b:
+            observed_items = list(observed.items())
+            disagreement = False
+            for i, (provider_a, value_a) in enumerate(observed_items):
+                for provider_b, value_b in observed_items[i + 1:]:
+                    if not _values_equal(field, value_a, value_b):
+                        disagreement = True
                         mismatches.append(Mismatch(
-                            provider_a,
-                            provider_b,
-                            number,
-                            field,
-                            value_a,
-                            value_b,
-                            "hard",
-                            "provider semantic values disagree",
+                            provider_a, provider_b, number, field, value_a, value_b, "hard",
+                            "provider hard-field values disagree; no majority truth is elected",
                         ))
+            if not disagreement and missing:
+                hard_coverage_gaps.append({
+                    "driver_number": number,
+                    "field": field,
+                    "verified_value": next(iter(observed.values())),
+                    "observed_providers": sorted(observed),
+                    "missing_providers": missing,
+                    "reason": "at least two providers agree; remaining provider coverage is missing",
+                })
 
+        for i, provider_a in enumerate(providers):
+            for provider_b in providers[i + 1:]:
+                a, b = rows[provider_a], rows[provider_b]
                 for field in SECONDARY_FIELDS:
                     value_a, value_b = getattr(a, field), getattr(b, field)
                     if value_a is None or value_b is None:
@@ -650,26 +554,13 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                         })
                     elif not _values_equal(field, value_a, value_b):
                         mismatches.append(Mismatch(
-                            provider_a,
-                            provider_b,
-                            number,
-                            field,
-                            value_a,
-                            value_b,
-                            "warning",
+                            provider_a, provider_b, number, field, value_a, value_b, "warning",
                             "secondary provider values disagree; no truth is elected",
                         ))
-
                 if a.driver_code and b.driver_code and a.driver_code.upper() != b.driver_code.upper():
                     mismatches.append(Mismatch(
-                        provider_a,
-                        provider_b,
-                        number,
-                        "driver_code",
-                        a.driver_code,
-                        b.driver_code,
-                        "warning",
-                        "audit identity label differs; number match is retained",
+                        provider_a, provider_b, number, "driver_code", a.driver_code, b.driver_code,
+                        "warning", "audit identity label differs; number match is retained",
                     ))
 
     hard = [row for row in mismatches if row.severity == "hard"]
@@ -683,9 +574,10 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
             payload["start_status"] = _start_status(row)
             payload_rows.append(payload)
         normalized_payload[provider] = payload_rows
+
     verification_status = "FAIL" if hard else ("PASS_WITH_GAPS" if insufficient_hard else "PASS")
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "kind": "cross_provider_completed_race_reconciliation",
         "providers": providers,
         "row_counts": {provider: len(rows) for provider, rows in normalized.items()},
@@ -694,9 +586,11 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
         "hard_mismatch_count": len(hard),
         "warning_count": len(warnings),
         "insufficient_hard_count": len(insufficient_hard),
+        "hard_coverage_gap_count": len(hard_coverage_gaps),
         "insufficient_secondary_count": len(insufficient_secondary),
         "mismatches": [asdict(row) for row in mismatches],
         "insufficient_hard_evidence": insufficient_hard,
+        "hard_coverage_gaps": hard_coverage_gaps,
         "insufficient_secondary": insufficient_secondary,
         "normalized": normalized_payload,
         "normalized_sha256": {
@@ -708,10 +602,10 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
             "identity_key": "race driver number",
             "hard_fields": list(HARD_FIELDS),
             "secondary_fields": list(SECONDARY_FIELDS),
+            "minimum_hard_provider_observations": 2,
             "raw_status_class_is_audit_only": True,
-            "nonfinisher_position_may_be_unknown": True,
-            "missing_hard_evidence_is_not_mismatch": True,
-            "missing_secondary_is_unknown": True,
+            "missing_provider_field_is_not_zero": True,
+            "two_agreeing_observations_can_verify_with_explicit_coverage_gap": True,
             "repair_disagreements": False,
             "majority_vote": False,
         },
