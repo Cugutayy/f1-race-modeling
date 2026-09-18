@@ -36,6 +36,7 @@ class MatrixEvent:
     hard_mismatch_count: int
     warning_count: int
     insufficient_hard_count: int
+    audit_gap_count: int
     insufficient_secondary_count: int
     provider_error_count: int
     provider_error_keys: tuple[str, ...]
@@ -147,6 +148,7 @@ def _load_event(path: Path) -> MatrixEvent:
         insufficient_hard_count=_exact_int(
             payload.get("insufficient_hard_count"), field="insufficient_hard_count"
         ),
+        audit_gap_count=_exact_int(payload.get("audit_gap_count", 0), field="audit_gap_count"),
         insufficient_secondary_count=_exact_int(
             payload.get("insufficient_secondary_count"), field="insufficient_secondary_count"
         ),
@@ -188,6 +190,7 @@ def build_matrix(paths: Iterable[Path]) -> dict[str, Any]:
         ),
         "fail_count": sum(row["verification_status"] == "FAIL" for row in rows),
         "hard_mismatch_count": sum(row["hard_mismatch_count"] for row in rows),
+        "audit_gap_count": sum(row["audit_gap_count"] for row in rows),
         "provider_error_count": sum(row["provider_error_count"] for row in rows),
         "events": rows,
         "policy": {
