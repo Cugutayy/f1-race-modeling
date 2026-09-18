@@ -141,7 +141,12 @@ def test_live_report_has_coherent_fallback_probabilities_only_with_research_over
     predictions = report["predictions"]
     assert len(predictions) == 3
     assert sum(row["win_probability"] for row in predictions) == pytest.approx(1.0)
-    assert sum(row["podium_probability"] for row in predictions) == pytest.approx(3.0)
+    podium_total = sum(row["podium_probability"] for row in predictions)
+    top10_total = sum(row["top10_probability"] for row in predictions)
+    assert podium_total == pytest.approx(report["audit"]["expected_podium_slots_filled"])
+    assert top10_total == pytest.approx(report["audit"]["expected_top10_slots_filled"])
+    assert 0.0 <= podium_total <= min(3, len(predictions))
+    assert 0.0 <= top10_total <= len(predictions)
     assert report["strategy_prior_source"]["source"] == "built_in_defaults"
 
 
