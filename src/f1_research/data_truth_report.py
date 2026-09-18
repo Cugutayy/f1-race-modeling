@@ -24,14 +24,15 @@ def render_markdown(matrix: dict[str, Any]) -> str:
         f"- Audit capability gaps: {matrix.get('audit_gap_count', 0)}",
         f"- Provider errors: {matrix['provider_error_count']}",
         "",
-        "| Season | Round | OpenF1 session | Status | Hard mismatch | Hard gaps | Secondary gaps | Reconciled | Source SHA-256 |",
-        "|---:|---:|---:|---|---:|---:|---:|---|---|",
+        "| Season | Round | OpenF1 session | Status | Hard mismatch | Hard gaps | Audit gaps | Secondary gaps | Reconciled | Source SHA-256 |",
+        "|---:|---:|---:|---|---:|---:|---:|---:|---|---|",
     ]
     for row in events:
         lines.append(
             f"| {row['year']} | {row['round_number']} | {row['openf1_session_key']} | "
             f"{row['verification_status']} | {row['hard_mismatch_count']} | "
-            f"{row['insufficient_hard_count']} | {row['insufficient_secondary_count']} | "
+            f"{row['insufficient_hard_count']} | {row.get('audit_gap_count', 0)} | "
+            f"{row['insufficient_secondary_count']} | "
             f"{'yes' if row['reconciliation_performed'] else 'no'} | `{row['source_sha256']}` |"
         )
     failed = [row for row in events if row["verification_status"] == "FAIL"]
