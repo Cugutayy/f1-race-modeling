@@ -37,6 +37,7 @@ def _state():
 
 
 def _patch_common(monkeypatch):
+    monkeypatch.setenv("F1_ALLOW_PACE_FALLBACK", "1")
     monkeypatch.setattr(scoped_live_api.base, "_read_state", _state)
     monkeypatch.setattr(
         scoped_live_api.base,
@@ -87,3 +88,22 @@ def test_strategy_endpoint_rejects_classification_only_driver(monkeypatch):
         scoped_live_api.strategy(driver_number=14, total_laps=57, samples=1000, _=None)
     assert exc.value.status_code == 409
     assert "classification-only" in str(exc.value.detail)
+
+
+
+def test_scoped_live_report_rejects_missing_strict_model_by_default(monkeypatch):
+    _patch_common(monkeypatch)
+    monkeypatch.delenv("F1_ALLOW_PACE_FALLBACK", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        scoped_live_api._scoped_live_report(57, 1000)
+    assert exc.value.status_code == 503
+    assert "strict live pace model" in str(exc.value.detail).lower()
+
+
+def test_scoped_strategy_rejects_missing_strict_model_by_default(monkeypatch):
+    _patch_common(monkeypatch)
+    monkeypatch.delenv("F1_ALLOW_PACE_FALLBACK", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        scoped_live_api.strategy(driver_number=1, total_laps=57, samples=1000, _=None)
+    assert exc.value.status_code == 503
+    assert "strict live pace model" in str(exc.value.detail).lower()
