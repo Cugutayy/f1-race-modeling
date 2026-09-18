@@ -6,11 +6,11 @@ Its scores parameterize a Plackett-Luce distribution evaluated on held-out races
 
 import numpy as np
 from scipy.stats import kendalltau, spearmanr
-from sklearn.metrics import ndcg_score
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
+from sklearn.metrics import ndcg_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
