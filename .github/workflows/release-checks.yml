@@ -4,6 +4,10 @@ on:
   push:
     branches: [feat/production-readiness-v1]
     paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'requirements-lock.txt'
       - '.github/workflows/release-checks.yml'
 permissions:
   contents: read
