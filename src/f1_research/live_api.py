@@ -425,6 +425,68 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
 
 
 
+@app.get("/readyz")
+def readyz(_: None = Depends(_authorize)) -> JSONResponse:
+    state = _read_state()
+    truth = _trusted_live_audit(state)
+    missing = []
+    if _load_artifact() is None:
+        missing.append("strict_model")
+    if not _priors_path().exists():
+        missing.append("strategy_priors")
+    try:
+        evidence = _read_model_evidence()
+    except HTTPException:
+        missing.append("model_evidence")
+        evidence = None
+    if missing:
+        raise HTTPException(status_code=503, detail={"missing": missing})
+    return JSONResponse(_safe({
+        "ready": True,
+        "session_key": state.get("session_key"),
+        "current_lap": state.get("current_lap"),
+        "data_truth": truth,
+        "model_evidence_run": evidence.get("run_id") if isinstance(evidence, dict) else None,
+    }))
+
+
+@app.get("/providerz")
+def providerz(_: None = Depends(_authorize)) -> JSONResponse:
+    state = _read_state()
+    manifest = _read_capture_manifest()
+    stream = manifest.get("stream") if isinstance(manifest.get("stream"), dict) else {}
+    quality = classify_live_quality(
+        state_age_s=_state_age_s(state),
+        provider_age_s=_age_s(state.get("latest_provider_event_at")),
+        connection_state=stream.get("connection_state"),
+        max_age_s=_max_live_age_s(),
+    )
+    status_code = 200 if quality.status == "LIVE" else 503
+    return JSONResponse(_safe({
+        "provider": "OpenF1",
+        "status": quality.status,
+        "reasons": list(quality.reasons),
+        "connection_state": stream.get("connection_state"),
+        "last_message_age_s": _age_s(stream.get("last_message_at")),
+        "provider_event_age_s": _age_s(state.get("latest_provider_event_at")),
+    }), status_code=status_code)
+
+
+@app.get("/modelz")
+def modelz(_: None = Depends(_authorize)) -> JSONResponse:
+    artifact = _load_artifact()
+    if artifact is None:
+        raise HTTPException(status_code=503, detail="Strict live pace model is unavailable")
+    evidence = _read_model_evidence()
+    return JSONResponse(_safe({
+        "ready": True,
+        "artifact_schema_version": artifact.get("schema_version") if isinstance(artifact, dict) else None,
+        "evidence_kind": evidence.get("evidence_kind"),
+        "sealed_test_events": evidence.get("sealed_test_events"),
+        "run_id": evidence.get("run_id"),
+    }))
+
+
 @app.websocket("/v1/ws")
 async def live_socket(websocket: WebSocket) -> None:
     expected = os.environ.get("F1_API_TOKEN")
