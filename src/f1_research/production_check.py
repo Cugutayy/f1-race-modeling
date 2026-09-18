@@ -96,6 +96,8 @@ def run_checks(
     manifest: Path,
     model: Path,
     calibration: Path,
+    feature_schema: Path,
+    training_data: Path,
     replay_capture: Path | None = None,
     expected_git_sha: str | None = None,
 ) -> dict[str, Any]:
@@ -126,6 +128,10 @@ def run_checks(
                 )
         if sha256_file(calibration) != loaded.calibration_sha256:
             raise ValueError("calibration artifact SHA-256 does not match manifest")
+        if sha256_file(feature_schema) != loaded.feature_schema_sha256:
+            raise ValueError("feature schema SHA-256 does not match manifest")
+        if sha256_file(training_data) != loaded.training_data_sha256:
+            raise ValueError("training data SHA-256 does not match manifest")
         checks["model_integrity"] = {"passed": True, "detail": loaded.model_id}
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         checks["model_integrity"] = {"passed": False, "detail": f"{type(exc).__name__}: {exc}"}
@@ -154,6 +160,8 @@ def main(argv=None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
+    parser.add_argument("--feature-schema", type=Path, required=True)
+    parser.add_argument("--training-data", type=Path, required=True)
     parser.add_argument("--replay-capture", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--expected-git-sha")
@@ -164,6 +172,8 @@ def main(argv=None) -> int:
         manifest=args.manifest,
         model=args.model,
         calibration=args.calibration,
+        feature_schema=args.feature_schema,
+        training_data=args.training_data,
         replay_capture=args.replay_capture,
         expected_git_sha=args.expected_git_sha,
     )
