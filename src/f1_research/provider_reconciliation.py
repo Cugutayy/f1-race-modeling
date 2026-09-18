@@ -27,7 +27,8 @@ from .data import JsonCache
 from .openf1_live import OpenF1Client
 from .provider_event_identity import build_event_identity, require_event_identity
 
-HARD_FIELDS = ("position", "laps", "result_class", "start_status")
+HARD_FIELDS = ("position", "laps", "result_class")
+AUDIT_FIELDS = ("start_status",)
 SECONDARY_FIELDS = ("grid_position", "pit_stops", "points")
 POSITION_REQUIRED_STATUSES = {"finished", "classified_lapped"}
 POSITION_OPTIONAL_STATUSES = {"dnf", "dns", "dsq"}
@@ -432,10 +433,11 @@ def _position_required(row: ResultRow) -> bool:
 def _provider_integrity(
     provider: str,
     rows: list[ResultRow],
-) -> tuple[list[Mismatch], list[dict[str, Any]]]:
-    """Return hard integrity failures plus explicit hard-evidence gaps."""
+) -> tuple[list[Mismatch], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return hard failures, release-blocking gaps, and non-blocking audit gaps."""
     failures: list[Mismatch] = []
     insufficient: list[dict[str, Any]] = []
+    audit_gaps: list[dict[str, Any]] = []
     positions = [row.position for row in rows if row.position is not None]
 
     if len(positions) != len(set(positions)):
@@ -463,7 +465,8 @@ def _provider_integrity(
 
     for row in rows:
         if row.position is None:
-            insufficient.append({
+            target = insufficient if _position_required(row) else audit_gaps
+            target.append({
                 "provider": provider,
                 "driver_number": row.driver_number,
                 "field": "position",
@@ -471,7 +474,7 @@ def _provider_integrity(
                 "reason": (
                     "provider omits final position for a classified finisher/lapped car"
                     if _position_required(row)
-                    else "provider does not expose a final position for this non-finisher"
+                    else "provider contract does not expose final position for this non-finisher"
                 ),
             })
         if row.laps is None:
@@ -499,7 +502,7 @@ def _provider_integrity(
                 "hard",
                 "provider is missing normalized classification status",
             ))
-    return failures, insufficient
+    return failures, insufficient, audit_gaps
 
 
 def _row_index(rows: Iterable[ResultRow]) -> dict[int, ResultRow]:
@@ -524,12 +527,16 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
     providers = sorted(normalized)
     mismatches: list[Mismatch] = []
     insufficient_hard: list[dict[str, Any]] = []
+    audit_gaps: list[dict[str, Any]] = []
     insufficient_secondary: list[dict[str, Any]] = []
 
     for provider in providers:
-        failures, missing = _provider_integrity(provider, normalized[provider])
+        failures, missing, provider_audit_gaps = _provider_integrity(
+            provider, normalized[provider]
+        )
         mismatches.extend(failures)
         insufficient_hard.extend(missing)
+        audit_gaps.extend(provider_audit_gaps)
 
     for i, provider_a in enumerate(providers):
         for provider_b in providers[i + 1:]:
@@ -564,7 +571,12 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                 a, b = left[number], right[number]
 
                 if a.position is None or b.position is None:
-                    insufficient_hard.append({
+                    target = (
+                        insufficient_hard
+                        if _position_required(a) or _position_required(b)
+                        else audit_gaps
+                    )
+                    target.append({
                         "provider_a": provider_a,
                         "provider_b": provider_b,
                         "driver_number": number,
@@ -573,7 +585,11 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                         "value_b": b.position,
                         "status_a": a.status_class,
                         "status_b": b.status_class,
-                        "reason": "at least one provider does not expose comparable non-finisher position evidence",
+                        "reason": (
+                            "at least one provider omits required classified-position evidence"
+                            if target is insufficient_hard
+                            else "non-finisher final position is outside at least one provider contract"
+                        ),
                     })
                 elif a.position != b.position:
                     mismatches.append(Mismatch(
@@ -614,7 +630,8 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                 for field, semantic in (("result_class", _result_class), ("start_status", _start_status)):
                     value_a, value_b = semantic(a), semantic(b)
                     if value_a is None or value_b is None:
-                        insufficient_hard.append({
+                        target = insufficient_hard if field == "result_class" else audit_gaps
+                        target.append({
                             "provider_a": provider_a,
                             "provider_b": provider_b,
                             "driver_number": number,
@@ -683,7 +700,7 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
             payload["start_status"] = _start_status(row)
             payload_rows.append(payload)
         normalized_payload[provider] = payload_rows
-    verification_status = "FAIL" if hard else ("PASS_WITH_GAPS" if insufficient_hard else "PASS")
+    verification_status = "FAIL" if hard else ("PASS_WITH_GAPS" if insufficient_hard or audit_gaps else "PASS")
     return {
         "schema_version": 4,
         "kind": "cross_provider_completed_race_reconciliation",
@@ -694,9 +711,11 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
         "hard_mismatch_count": len(hard),
         "warning_count": len(warnings),
         "insufficient_hard_count": len(insufficient_hard),
+        "audit_gap_count": len(audit_gaps),
         "insufficient_secondary_count": len(insufficient_secondary),
         "mismatches": [asdict(row) for row in mismatches],
         "insufficient_hard_evidence": insufficient_hard,
+        "audit_gaps": audit_gaps,
         "insufficient_secondary": insufficient_secondary,
         "normalized": normalized_payload,
         "normalized_sha256": {
@@ -707,9 +726,13 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
         "policy": {
             "identity_key": "race driver number",
             "hard_fields": list(HARD_FIELDS),
+            "audit_fields": list(AUDIT_FIELDS),
             "secondary_fields": list(SECONDARY_FIELDS),
             "raw_status_class_is_audit_only": True,
             "nonfinisher_position_may_be_unknown": True,
+            "nonfinisher_position_gap_blocks_release": False,
+            "missing_start_status_blocks_release": False,
+            "explicit_start_status_disagreement_is_hard": True,
             "missing_hard_evidence_is_not_mismatch": True,
             "missing_secondary_is_unknown": True,
             "repair_disagreements": False,
@@ -789,7 +812,7 @@ def collect_openf1_raw(session_key: int) -> dict[str, Any]:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status != 404:
                 raise
-            collections[endpoint] = []
+            collections[endpoint] = None
             optional_collection_errors[endpoint] = {
                 "error_type": type(exc).__name__,
                 "http_status": int(status),

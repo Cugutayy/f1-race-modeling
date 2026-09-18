@@ -142,10 +142,12 @@ def _failure_report(
         "hard_mismatch_count": len(provider_errors),
         "warning_count": 0,
         "insufficient_hard_count": 0,
+        "audit_gap_count": 0,
         "insufficient_secondary_count": 0,
         "provider_errors": provider_errors,
         "mismatches": [],
         "insufficient_hard_evidence": [],
+        "audit_gaps": [],
         "insufficient_secondary": [],
         "raw_sha256": {
             name: _json_sha256(value) for name, value in raw_snapshots.items()
@@ -276,7 +278,7 @@ def audit_completed_race(
     report["limitations"] = [
         "Public-provider agreement is not statistical independence or official FIA certification.",
         "FastF1 can expose result metadata even when timing/lap loading fails; partial evidence stays explicit.",
-        "A provider-specific absence of non-finisher position is retained as an evidence gap, not imputed.",
+        "A provider-specific absence of non-finisher position is retained as an audit capability gap, not imputed.",
         "Missing secondary evidence remains unknown rather than zero/false.",
         "Provider disagreements are never repaired by majority vote.",
         "Result comparison runs only after required same-event metadata checks pass across all three providers.",
@@ -287,6 +289,9 @@ def audit_completed_race(
     pd.DataFrame(report.get("mismatches", [])).to_csv(output / "mismatches.csv", index=False)
     pd.DataFrame(report.get("insufficient_hard_evidence", [])).to_csv(
         output / "insufficient_hard_evidence.csv", index=False
+    )
+    pd.DataFrame(report.get("audit_gaps", [])).to_csv(
+        output / "audit_gaps.csv", index=False
     )
     pd.DataFrame(report.get("insufficient_secondary", [])).to_csv(
         output / "insufficient_secondary.csv", index=False
@@ -317,6 +322,7 @@ def main(argv: list[str] | None = None) -> None:
         "hard_mismatch_count": report.get("hard_mismatch_count", 0),
         "warning_count": report.get("warning_count", 0),
         "insufficient_hard_count": report.get("insufficient_hard_count", 0),
+        "audit_gap_count": report.get("audit_gap_count", 0),
         "provider_errors": report.get("provider_errors", {}),
         "output": str(args.output),
     }, indent=2))

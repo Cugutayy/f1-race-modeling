@@ -82,7 +82,9 @@ def test_audit_writes_insufficient_hard_evidence_csv(tmp_path, monkeypatch):
     )
     assert report["passed"] is True
     assert report["verification_status"] == "PASS_WITH_GAPS"
-    assert report["insufficient_hard_count"] > 0
+    assert report["insufficient_hard_count"] == 0
+    assert report["audit_gap_count"] > 0
     assert report["event_identity"]["verified"] is True
     assert report["event_metadata"]["OpenF1"]["event_name"] == "Audit GP"
     assert (output / "insufficient_hard_evidence.csv").exists()
+    assert (output / "audit_gaps.csv").exists()

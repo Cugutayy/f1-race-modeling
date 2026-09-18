@@ -21,16 +21,18 @@ def render_markdown(matrix: dict[str, Any]) -> str:
         f"- PASS_WITH_GAPS: {matrix['pass_with_gaps_count']}",
         f"- FAIL: {matrix['fail_count']}",
         f"- Hard mismatches: {matrix['hard_mismatch_count']}",
+        f"- Audit capability gaps: {matrix.get('audit_gap_count', 0)}",
         f"- Provider errors: {matrix['provider_error_count']}",
         "",
-        "| Season | Round | OpenF1 session | Status | Hard mismatch | Hard gaps | Secondary gaps | Reconciled | Source SHA-256 |",
-        "|---:|---:|---:|---|---:|---:|---:|---|---|",
+        "| Season | Round | OpenF1 session | Status | Hard mismatch | Hard gaps | Audit gaps | Secondary gaps | Reconciled | Source SHA-256 |",
+        "|---:|---:|---:|---|---:|---:|---:|---:|---|---|",
     ]
     for row in events:
         lines.append(
             f"| {row['year']} | {row['round_number']} | {row['openf1_session_key']} | "
             f"{row['verification_status']} | {row['hard_mismatch_count']} | "
-            f"{row['insufficient_hard_count']} | {row['insufficient_secondary_count']} | "
+            f"{row['insufficient_hard_count']} | {row.get('audit_gap_count', 0)} | "
+            f"{row['insufficient_secondary_count']} | "
             f"{'yes' if row['reconciliation_performed'] else 'no'} | `{row['source_sha256']}` |"
         )
     failed = [row for row in events if row["verification_status"] == "FAIL"]
@@ -48,6 +50,7 @@ def render_markdown(matrix: dict[str, Any]) -> str:
         "## Evidence policy",
         "",
         "- Missing provider evidence remains unknown; it is never converted to zero or false.",
+        "- Structural provider capability gaps remain visible as audit gaps; they are not hard contradictions.",
         "- Provider disagreements are not repaired by majority vote.",
         "- A passing artifact requires verified event identity and no provider errors.",
         "- SHA-256 identifies the exact reconciliation artifact summarized by each row.",

@@ -34,7 +34,7 @@ def test_openf1_historical_optional_404_preserves_core_provider(monkeypatch):
     assert raw["session_result"]
     assert raw["drivers"]
     assert raw["laps"]
-    assert raw["pit"] == []
+    assert raw["pit"] is None
     assert raw["starting_grid"] is None
     assert raw["optional_collection_errors"]["pit"]["http_status"] == 404
     assert raw["optional_collection_errors"]["starting_grid"]["http_status"] == 404
