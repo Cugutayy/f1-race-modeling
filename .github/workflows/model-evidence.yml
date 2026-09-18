@@ -65,6 +65,8 @@ jobs:
           assert release["calibration_used_for_model_fit"] is False
           assert manifest.benchmark_run_id == report["run_id"]
           assert manifest.calibration_sha256 == sha256_file(root / "calibration.json")
+          assert manifest.feature_schema_sha256 == sha256_file(root / "feature_schema.json")
+          assert manifest.training_data_sha256 == sha256_file(root / "training_features.csv")
           test = set(report["audit"]["split"]["test"])
           assert {row["event_id"] for row in report["predictions"]} == test
           print("sealed release contract verified")
@@ -94,6 +96,8 @@ jobs:
             --manifest "$root/model_manifest.json" \
             --model "$root/model.joblib" \
             --calibration "$root/calibration.json" \
+            --feature-schema "$root/feature_schema.json" \
+            --training-data "$root/training_features.csv" \
             --replay-capture "$replay" \
             --expected-git-sha "$GITHUB_SHA" \
             --output reports/model-release/PRODUCTION_READINESS.json
