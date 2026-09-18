@@ -27,7 +27,7 @@ from .live_quality import classify as classify_live_quality
 from .model_registry import sha256_file
 from .monitoring import snapshot as monitoring_snapshot
 from .prediction_ledger import append_jsonl, make_record, sha256_json
-from .race_control import TrackState, reduce_race_control
+from .race_control import STATES
 from .reliability import reliability_overrides_from_state
 from .strategy import SimulationConfig, compare_pit_windows, predict_from_state
 from .strategy_calibration import load_simulation_config
@@ -578,19 +578,19 @@ async def live_socket(websocket: WebSocket) -> None:
 @app.get("/v1/race-control")
 def race_control_summary(_: None = Depends(_authorize)) -> JSONResponse:
     state = _read_state()
-    current = TrackState()
-    events = state.get("race_control") or []
-    if not isinstance(events, list):
-        events = []
-    for event in events:
-        if isinstance(event, dict):
-            current = reduce_race_control(current, event)
+    normalized = state.get("track_state")
+    if normalized not in STATES:
+        normalized = "UNKNOWN"
     return JSONResponse(_safe({
         "schema_version": 1,
-        "state": current.state,
-        "changed_at": current.changed_at,
-        "message": current.message,
-        "event_count": len(events),
+        "state": normalized,
+        "changed_at": state.get("track_state_changed_at"),
+        "message": state.get("track_state_message"),
+        "raw": {
+            "session_status": state.get("status"),
+            "flag": state.get("flag"),
+            "safety_car": state.get("safety_car"),
+        },
     }))
 
 
