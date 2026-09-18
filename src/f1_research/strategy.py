@@ -352,6 +352,10 @@ def simulate(
         if next_compound not in config.compound_pace_delta_s:
             raise ValueError(f"Unsupported strategy compound: {next_compound}")
         pit_offset = strategy.pit_in_laps if strategy else _default_pit_offset(driver, config)
+        # An automatic default may point beyond the remaining race; in that case the
+        # correct default is no stop. Explicit user strategies remain fail-closed.
+        if strategy is None and pit_offset is not None and pit_offset >= laps_remaining:
+            pit_offset = None
         if pit_offset is not None:
             if (
                 isinstance(pit_offset, bool)
