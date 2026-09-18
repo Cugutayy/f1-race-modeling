@@ -27,7 +27,8 @@ from .data import JsonCache
 from .openf1_live import OpenF1Client
 from .provider_event_identity import build_event_identity, require_event_identity
 
-HARD_FIELDS = ("position", "laps", "result_class", "start_status")
+HARD_FIELDS = ("position", "laps", "result_class")
+AUDIT_FIELDS = ("start_status",)
 SECONDARY_FIELDS = ("grid_position", "pit_stops", "points")
 POSITION_REQUIRED_STATUSES = {"finished", "classified_lapped"}
 POSITION_OPTIONAL_STATUSES = {"dnf", "dns", "dsq"}
