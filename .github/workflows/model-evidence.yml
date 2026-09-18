@@ -2,6 +2,10 @@ name: Sealed model evidence
 # Produces benchmark, model manifest, model bytes and calibration from the same release run.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.release-trigger'
 permissions:
   actions: read
   contents: read
@@ -12,7 +16,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -67,16 +71,24 @@ jobs:
           assert {row["event_id"] for row in report["predictions"]} == test
           print("sealed release contract verified")
           PY
-      - name: Resolve latest successful real data and replay evidence
+      - name: Resolve same-revision real data and replay evidence
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
         run: |
-          data_run="$(gh run list --repo "$REPO" --workflow 'Real provider data-truth audit' --branch "$BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-          replay_run="$(gh run list --repo "$REPO" --workflow 'Historical replay evidence' --branch "$BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-          test -n "$data_run" || { echo "No successful real data-truth run"; exit 1; }
-          test -n "$replay_run" || { echo "No successful real replay run"; exit 1; }
+          data_run=""
+          replay_run=""
+          for attempt in $(seq 1 180); do
+            data_run="$(gh run list --repo "$REPO" --workflow 'Real provider data-truth audit' --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+            replay_run="$(gh run list --repo "$REPO" --workflow 'Historical replay evidence' --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+            if [ -n "$data_run" ] && [ -n "$replay_run" ]; then
+              break
+            fi
+            echo "Waiting for same-revision provider/replay evidence (attempt $attempt/180)"
+            sleep 30
+          done
+          test -n "$data_run" || { echo "No successful same-revision real data-truth run"; exit 1; }
+          test -n "$replay_run" || { echo "No successful same-revision real replay run"; exit 1; }
           mkdir -p reports/final-evidence/data reports/final-evidence/replay
           gh run download "$data_run" --repo "$REPO" --pattern 'data-truth-matrix-*' --dir reports/final-evidence/data
           gh run download "$replay_run" --repo "$REPO" --pattern 'real-replay-*' --dir reports/final-evidence/replay
