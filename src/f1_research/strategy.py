@@ -518,6 +518,10 @@ def simulate(
         completed_laps,
         total,
     )
+    podium_limit = min(3, m)
+    top10_limit = min(10, m)
+    podium_slots_filled = ((ranks <= podium_limit) & classified).sum(axis=1)
+    top10_slots_filled = ((ranks <= top10_limit) & classified).sum(axis=1)
 
     results = []
     for j, driver in enumerate(drivers):
@@ -528,8 +532,8 @@ def simulate(
                 label=driver.label,
                 expected_position=float(r.mean()),
                 win_probability=float(((r == 1) & classified[:, j]).mean()),
-                podium_probability=float(((r <= min(3, m)) & classified[:, j]).mean()),
-                top10_probability=float(((r <= min(10, m)) & classified[:, j]).mean()),
+                podium_probability=float(((r <= podium_limit) & classified[:, j]).mean()),
+                top10_probability=float(((r <= top10_limit) & classified[:, j]).mean()),
                 position_p10=int(np.quantile(r, 0.10, method="inverted_cdf")),
                 position_p90=int(np.quantile(r, 0.90, method="inverted_cdf")),
                 dnf_probability=float(dnf[:, j].mean()),
@@ -580,6 +584,9 @@ def simulate(
             "min": int(classification_thresholds.min()),
             "max": int(classification_thresholds.max()),
         },
+        "expected_classified_count": float(classified.sum(axis=1).mean()),
+        "expected_podium_slots_filled": float(podium_slots_filled.mean()),
+        "expected_top10_slots_filled": float(top10_slots_filled.mean()),
         "strategy_overrides": {str(key): asdict(value) for key, value in strategies.items()},
         "strategy_offset_semantics": (
             "0=pit immediately before first future lap; N>0=run N future laps then pit"
