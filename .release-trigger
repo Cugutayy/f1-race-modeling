@@ -1,2 +1,3 @@
-production-v1
+production-v2
 purpose=same-revision-data-replay-model-evidence
+reason=provider-capability-gap-semantics
