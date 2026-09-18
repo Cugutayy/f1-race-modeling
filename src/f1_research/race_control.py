@@ -24,18 +24,26 @@ def reduce_race_control(current: TrackState, event: dict[str, Any]) -> TrackStat
     category = str(event.get("category") or "").upper()
     date = event.get("date")
 
-    if flag == "CHEQUERED" or "CHEQUERED FLAG" in message or "SESSION ENDED" in message:
+    if (
+        flag == "CHEQUERED"
+        or "CHEQUERED FLAG" in message
+        or (category == "SESSIONSTATUS" and any(word in message for word in ("ENDED", "FINISHED")))
+    ):
         state = "FINISHED"
     elif flag == "RED" or "RED FLAG" in message:
         state = "RED"
     elif "VIRTUAL SAFETY CAR" in message or "VSC" in message:
-        state = "GREEN" if any(x in message for x in ("ENDING", "ENDED")) else "VSC"
+        # VSC ENDING is still neutralized until the provider reports it ended/green.
+        state = "RESTART" if "ENDED" in message and "ENDING" not in message else "VSC"
     elif "SAFETY CAR" in message:
-        state = "GREEN" if any(x in message for x in ("IN THIS LAP", "ENDING", "ENDED")) else "SC"
+        # "SAFETY CAR IN THIS LAP" means the SC remains active until the restart.
+        state = "RESTART" if "ENDED" in message and "ENDING" not in message else "SC"
     elif flag in {"YELLOW", "DOUBLE YELLOW"}:
         state = "YELLOW"
     elif flag == "GREEN":
         state = "RESTART" if current.state in {"RED", "SC", "VSC"} else "GREEN"
+    elif category == "SESSIONSTATUS" and "RESUMED" in message:
+        state = "RESTART"
     elif category == "SESSIONSTATUS" and "STARTED" in message:
         state = "GREEN"
     else:
