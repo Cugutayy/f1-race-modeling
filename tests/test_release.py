@@ -52,4 +52,8 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
     assert result["model_training_blocks"] == ["fit", "tuning"]
     assert result["calibration_used_for_model_fit"] is False
     assert manifest.calibration_sha256 == sha256_file(out / "calibration.json")
+    assert manifest.feature_schema_sha256 == sha256_file(out / "feature_schema.json")
+    assert manifest.training_data_sha256 == sha256_file(out / "training_features.csv")
+    assert result["feature_schema"] == str(out / "feature_schema.json")
+    assert result["training_data"] == str(out / "training_features.csv")
     assert json.loads((out / "benchmark" / "report.json").read_text())["test_events"] == 2
