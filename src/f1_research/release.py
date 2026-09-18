@@ -17,7 +17,6 @@ from .model_registry import ModelManifest, sha256_file, write_manifest
 from .modern_models import CandidateSpec, fit_selected
 
 
-
 def _git_sha() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
