@@ -5,6 +5,8 @@ Its scores parameterize a Plackett-Luce distribution evaluated on held-out races
 """
 
 import numpy as np
+from scipy.stats import kendalltau, spearmanr
+from sklearn.metrics import ndcg_score
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.impute import SimpleImputer
@@ -15,7 +17,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from .features import CATEGORICAL, FEATURES, NUMERIC
 
 MODELS = ("uniform", "qualifying_order", "recent_form", "ridge_rank", "gradient_boosting")
-METRICS = ("position_mae", "winner_log_loss", "winner_brier", "winner_accuracy", "podium_recall")
+METRICS = ("position_mae", "winner_log_loss", "winner_brier", "winner_accuracy", "podium_recall", "spearman_rank", "kendall_rank", "ndcg")
 
 
 def estimator(kind="gradient_boosting"):
@@ -92,12 +94,21 @@ def score_event(event, scores, temperature):
     ranks = np.empty(len(scores), dtype=int)
     ranks[np.argsort(scores, kind="stable")] = np.arange(1, len(scores) + 1)
     winner = truth == 1
+    # Higher relevance means a better actual finish. NDCG therefore rewards getting the
+    # whole ordering right rather than only the winner/podium.
+    relevance = (len(event) + 1 - truth).astype(float)
+    ndcg = float(ndcg_score(relevance.reshape(1, -1), (-scores).reshape(1, -1)))
+    spearman = float(spearmanr(ranks, truth).statistic)
+    kendall = float(kendalltau(ranks, truth).statistic)
     return {
         "position_mae": float(np.mean(np.abs(ranks - truth))),
         "winner_log_loss": float(-np.log(max(p[winner][0], 1e-15))),
         "winner_brier": float(np.sum((p - winner) ** 2)),
         "winner_accuracy": float(truth[np.argmin(scores)] == 1),
         "podium_recall": float(np.sum((ranks <= 3) & (truth <= 3)) / min(3, len(event))),
+        "spearman_rank": spearman,
+        "kendall_rank": kendall,
+        "ndcg": ndcg,
     }, ranks
 
 
