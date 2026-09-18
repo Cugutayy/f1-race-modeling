@@ -16,6 +16,7 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     benchmark.write_text(json.dumps({
         "schema_version": 2, "data_kind": "historical", "run_id": "sealed-1", "test_events": test_events,
         "predictions": [{"event_id": f"T{i}", "driver": "VER"} for i in range(test_events)], "metrics": [{"position_mae": 1.0}],
+        "winner_calibration": [{"model": "rank-v1", "winner_ece": 0.05, "reliability": []}],
         "audit": {"test_updates_model": False, "split": {
             "fit": ["E1"], "tuning": ["E2"], "calibration": ["E3"],
             "test": [f"T{i}" for i in range(test_events)],
