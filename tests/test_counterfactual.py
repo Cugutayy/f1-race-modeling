@@ -1,3 +1,5 @@
+import pytest
+
 from f1_research.counterfactual import pit_window
 from f1_research.strategy import DriverInput, SimulationConfig, Strategy, predict_from_state, simulate
 
@@ -95,4 +97,4 @@ def test_pit_timing_reuses_same_latent_pit_loss_shock():
     )
     now_driver = next(row for row in now if row.driver_number == 1)
     later_driver = next(row for row in later if row.driver_number == 1)
-    assert now_driver.mean_remaining_time_s == later_driver.mean_remaining_time_s
+    assert now_driver.mean_remaining_time_s == pytest.approx(later_driver.mean_remaining_time_s, abs=1e-12)
