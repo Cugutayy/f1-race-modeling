@@ -38,8 +38,9 @@ def test_nonfinisher_missing_position_is_evidence_gap_not_hard_mismatch():
     assert report["passed"] is True
     assert report["verification_status"] == "PASS_WITH_GAPS"
     assert report["hard_mismatch_count"] == 0
-    assert report["insufficient_hard_count"] > 0
-    assert all(item["field"] == "position" for item in report["insufficient_hard_evidence"])
+    assert report["insufficient_hard_count"] == 0
+    assert report["audit_gap_count"] > 0
+    assert any(item["field"] == "position" for item in report["audit_gaps"])
 
 
 def test_classified_driver_missing_position_is_explicit_gap_not_contradiction():
@@ -56,6 +57,43 @@ def test_classified_driver_missing_position_is_explicit_gap_not_contradiction():
         and row["field"] == "position"
         and "classified" in row["reason"]
         for row in report["insufficient_hard_evidence"]
+    )
+
+
+def test_missing_start_status_is_audited_without_blocking_release_evidence():
+    report = reconcile_results({
+        "Jolpica": [
+            _row("Jolpica", number=4, position=1, laps=57, status="finished", code="NOR"),
+            _row("Jolpica", number=30, position=None, laps=0, status="dnf", code="LAW"),
+        ],
+        "OpenF1": [
+            _row("OpenF1", number=4, position=1, laps=57, status="finished", code="NOR"),
+            _row("OpenF1", number=30, position=None, laps=0, status="dns", code="LAW"),
+        ],
+    })
+
+    assert report["passed"] is True
+    assert report["hard_mismatch_count"] == 0
+    assert report["insufficient_hard_count"] == 0
+    assert any(item["field"] == "start_status" for item in report["audit_gaps"])
+
+
+def test_explicit_start_status_disagreement_remains_hard_failure():
+    report = reconcile_results({
+        "Jolpica": [
+            _row("Jolpica", number=4, position=1, laps=57, status="finished", code="NOR"),
+            _row("Jolpica", number=30, position=None, laps=1, status="dnf", code="LAW"),
+        ],
+        "OpenF1": [
+            _row("OpenF1", number=4, position=1, laps=57, status="finished", code="NOR"),
+            _row("OpenF1", number=30, position=None, laps=0, status="dns", code="LAW"),
+        ],
+    })
+
+    assert report["passed"] is False
+    assert any(
+        row["field"] == "start_status" and row["severity"] == "hard"
+        for row in report["mismatches"]
     )
 
 def test_openf1_points_are_preserved_as_secondary_evidence():
