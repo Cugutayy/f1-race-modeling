@@ -9,7 +9,7 @@ on:
       - '.github/workflows/web.yml'
   push:
     branches:
-      - main
+      - '**'
     paths:
       - 'web/**'
       - 'vercel.json'
