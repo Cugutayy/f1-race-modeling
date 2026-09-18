@@ -29,3 +29,16 @@ def test_feature_available_after_cutoff_is_rejected():
 def test_unknown_quality_label_is_rejected():
     with pytest.raises(ValueError, match="quality"):
         evidence_sha256([_item(quality="GUESSED")], cutoff_at="2026-03-07T08:00:00Z")
+
+
+def test_feature_cannot_be_available_before_observation():
+    with pytest.raises(ValueError, match="before it was observed"):
+        evidence_sha256(
+            [_item(observed_at="2026-03-07T07:55:00Z", available_at="2026-03-07T07:54:59Z")],
+            cutoff_at="2026-03-07T08:00:00Z",
+        )
+
+
+def test_feature_source_digest_must_be_hex():
+    with pytest.raises(ValueError, match="SHA-256"):
+        evidence_sha256([_item(source_sha256="z" * 64)], cutoff_at="2026-03-07T08:00:00Z")
