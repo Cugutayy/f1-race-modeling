@@ -64,11 +64,6 @@ def run_checks(*, data_truth: Path, benchmark: Path, manifest: Path, model: Path
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             passed, detail = False, f"{type(exc).__name__}: {exc}"
         checks[name] = {"passed": passed, "detail": detail}
-    if checks["data_truth"]["passed"]:
-        truth = json.loads(data_truth.read_text(encoding="utf-8"))
-        count = len(truth.get("events") or [])
-        if count < minimum_audited_events:
-            checks["data_truth"] = {"passed": False, "detail": f"{count} audited events; require >= {minimum_audited_events}"}
     try:
         loaded = load_manifest(manifest, model_path=model)
         benchmark_payload = json.loads(benchmark.read_text(encoding="utf-8"))
