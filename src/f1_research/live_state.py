@@ -25,10 +25,6 @@ from .race_control import TrackState, reduce_race_control
 _LAP_DEFICIT_RE = re.compile(r"^\+?\s*(\d+)\s+LAPS?$", re.IGNORECASE)
 
 
-def _utc(value: Any, fallback: datetime | None = None) -> datetime:
-    parsed = parse_provider_timestamp(value)
-    return parsed if parsed is not None else fallback or datetime.now(UTC)
-
 
 def _finite(value: Any) -> float | None:
     try:
