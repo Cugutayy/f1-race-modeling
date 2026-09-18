@@ -630,7 +630,8 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                 for field, semantic in (("result_class", _result_class), ("start_status", _start_status)):
                     value_a, value_b = semantic(a), semantic(b)
                     if value_a is None or value_b is None:
-                        insufficient_hard.append({
+                        target = insufficient_hard if field == "result_class" else audit_gaps
+                        target.append({
                             "provider_a": provider_a,
                             "provider_b": provider_b,
                             "driver_number": number,
