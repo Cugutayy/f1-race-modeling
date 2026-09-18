@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -17,9 +16,6 @@ from .features import FEATURES, build_features
 from .model_registry import ModelManifest, sha256_file, write_manifest
 from .modern_models import CandidateSpec, fit_selected
 
-
-def _sha256_bytes(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
 
 
 def _git_sha() -> str:
@@ -65,12 +61,16 @@ def build_release(
     model_path = output / "model.joblib"
     joblib.dump(model, model_path)
 
-    feature_schema_sha = _sha256_bytes(
-        json.dumps(FEATURES, separators=(",", ":"), sort_keys=False).encode()
+    feature_schema_path = output / "feature_schema.json"
+    feature_schema_path.write_text(
+        json.dumps(FEATURES, separators=(",", ":"), sort_keys=False),
+        encoding="utf-8",
     )
-    training_data_sha = _sha256_bytes(
-        train.sort_values(["date", "event_id", "driver"]).to_csv(index=False).encode()
-    )
+    training_data_path = output / "training_features.csv"
+    training_snapshot = train.sort_values(["date", "event_id", "driver"])
+    training_data_path.write_text(training_snapshot.to_csv(index=False), encoding="utf-8")
+    feature_schema_sha = sha256_file(feature_schema_path)
+    training_data_sha = sha256_file(training_data_path)
     calibration_payload = {
         "schema_version": 1,
         "temperatures": audit["temperatures"],
@@ -99,6 +99,8 @@ def build_release(
         "model": str(model_path),
         "manifest": str(manifest_path),
         "calibration": str(calibration_path),
+        "feature_schema": str(feature_schema_path),
+        "training_data": str(training_data_path),
         "model_id": manifest.model_id,
         "sealed_test_events": report["test_events"],
         "model_training_blocks": ["fit", "tuning"],
