@@ -571,7 +571,12 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                 a, b = left[number], right[number]
 
                 if a.position is None or b.position is None:
-                    insufficient_hard.append({
+                    target = (
+                        insufficient_hard
+                        if _position_required(a) or _position_required(b)
+                        else audit_gaps
+                    )
+                    target.append({
                         "provider_a": provider_a,
                         "provider_b": provider_b,
                         "driver_number": number,
@@ -580,7 +585,11 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
                         "value_b": b.position,
                         "status_a": a.status_class,
                         "status_b": b.status_class,
-                        "reason": "at least one provider does not expose comparable non-finisher position evidence",
+                        "reason": (
+                            "at least one provider omits required classified-position evidence"
+                            if target is insufficient_hard
+                            else "non-finisher final position is outside at least one provider contract"
+                        ),
                     })
                 elif a.position != b.position:
                     mismatches.append(Mismatch(
