@@ -28,9 +28,11 @@ def test_modelz_exposes_sealed_evidence(monkeypatch):
     monkeypatch.setattr(live_api, "_read_model_evidence", lambda: {
         "evidence_kind": "retrospective_sealed_historical_benchmark",
         "sealed_test_events": 12,
-        "run_id": "sealed-abc",
+        "benchmark_run_id": "sealed-abc",
     })
     response = TestClient(live_api.app).get("/modelz")
     assert response.status_code == 200
-    assert response.json()["sealed_test_events"] == 12
-    assert response.json()["run_id"] == "sealed-abc"
+    payload = response.json()
+    assert payload["live_pace_model"]["artifact_schema_version"] == 7
+    assert payload["race_outcome_model_evidence"]["sealed_test_events"] == 12
+    assert payload["race_outcome_model_evidence"]["benchmark_run_id"] == "sealed-abc"
