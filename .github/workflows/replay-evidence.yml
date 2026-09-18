@@ -1,10 +1,6 @@
 name: Historical replay evidence
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/production-readiness-v1]
-    paths:
-      - '.github/workflows/replay-evidence.yml'
 permissions:
   contents: read
 concurrency:
