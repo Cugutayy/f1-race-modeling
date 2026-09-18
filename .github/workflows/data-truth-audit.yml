@@ -1,6 +1,10 @@
 name: Real provider data-truth audit
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/production-readiness-v1]
+    paths:
+      - '.github/workflows/data-truth-audit.yml'
 permissions:
   contents: read
 concurrency:
@@ -82,6 +86,23 @@ jobs:
           python -m f1_research.provider_matrix "${files[@]}" --output reports/data-truth
           python -m f1_research.data_truth_report reports/data-truth/data_truth_matrix.json \
             --output reports/data-truth/DATA_TRUTH_REPORT.md
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          matrix = json.loads(Path("reports/data-truth/data_truth_matrix.json").read_text())
+          expected = {
+              (2023, 3, 7787), (2024, 1, 9472), (2024, 5, 9673), (2024, 6, 9507),
+              (2024, 8, 9523), (2024, 9, 9531), (2024, 14, 9574), (2024, 21, 9636),
+              (2024, 23, 9655), (2025, 1, 9693), (2025, 2, 9998), (2026, 1, 11234),
+          }
+          actual = {
+              (int(row["year"]), int(row["round_number"]), int(row["openf1_session_key"]))
+              for row in matrix["events"]
+          }
+          if actual != expected:
+              raise SystemExit(f"Audit identity set mismatch: missing={sorted(expected-actual)} extra={sorted(actual-expected)}")
+          print("verified exact 12-event audit identity set")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: data-truth-matrix-${{ github.run_id }}
