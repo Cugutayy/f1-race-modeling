@@ -4,6 +4,8 @@ import json
 from f1_research.model_registry import ModelManifest, write_manifest
 from f1_research.production_check import run_checks
 
+GIT_SHA = "a" * 40
+
 
 def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
@@ -11,7 +13,23 @@ def _sha(raw):
 
 def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     truth = tmp_path / "truth.json"
-    truth.write_text(json.dumps({"matrix_schema_version": 1, "events": [{"verification_status": status} for _ in range(12)]}))
+    truth.write_text(json.dumps({
+        "matrix_schema_version": 1,
+        "producer_git_sha": GIT_SHA,
+        "events": [
+            {
+                "verification_status": status,
+                "passed": status in {"PASS", "PASS_WITH_GAPS"},
+                "event_identity_verified": status != "FAIL",
+                "reconciliation_performed": status != "FAIL",
+                "hard_mismatch_count": 0 if status != "FAIL" else 1,
+                "provider_error_count": 0,
+                "source_sha256": "b" * 64,
+                "producer_git_sha": GIT_SHA,
+            }
+            for _ in range(12)
+        ],
+    }))
     benchmark = tmp_path / "benchmark.json"
     benchmark.write_text(json.dumps({
         "schema_version": 2, "data_kind": "historical", "run_id": "sealed-1", "test_events": test_events,
@@ -29,7 +47,7 @@ def _files(tmp_path, *, status="PASS_WITH_GAPS", test_events=12):
     manifest = tmp_path / "manifest.json"
     write_manifest(manifest, ModelManifest(
         1, "rank-v1", _sha(b"model"), _sha(b"features"), _sha(b"data"),
-        _sha(b"calibration"), "2026-03-01T00:00:00Z", "sealed-1", "abc123",
+        _sha(b"calibration"), "2026-03-01T00:00:00Z", "sealed-1", GIT_SHA,
     ))
     replay = tmp_path / "replay.jsonl"
     replay_rows = [
@@ -118,3 +136,32 @@ def test_production_gate_rejects_single_topic_replay(tmp_path):
                         calibration=calibration, replay_capture=replay)
     assert result["production_ready"] is False
     assert "missing topics" in result["checks"]["replay"]["detail"]
+
+
+def test_production_gate_rejects_stale_data_truth_revision(tmp_path):
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
+    result = run_checks(
+        data_truth=truth,
+        benchmark=benchmark,
+        manifest=manifest,
+        model=model,
+        calibration=calibration,
+        replay_capture=replay,
+        expected_git_sha="b" * 40,
+    )
+    assert result["production_ready"] is False
+    assert "does not match release revision" in result["checks"]["data_truth"]["detail"]
+
+
+def test_production_gate_accepts_matching_source_revision(tmp_path):
+    truth, benchmark, manifest, model, calibration, replay = _files(tmp_path)
+    result = run_checks(
+        data_truth=truth,
+        benchmark=benchmark,
+        manifest=manifest,
+        model=model,
+        calibration=calibration,
+        replay_capture=replay,
+        expected_git_sha=GIT_SHA,
+    )
+    assert result["production_ready"] is True

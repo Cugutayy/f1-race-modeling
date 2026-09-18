@@ -95,6 +95,7 @@ jobs:
             --model "$root/model.joblib" \
             --calibration "$root/calibration.json" \
             --replay-capture "$replay" \
+            --expected-git-sha "$GITHUB_SHA" \
             --output reports/model-release/PRODUCTION_READINESS.json
       - uses: actions/upload-artifact@v4
         with:

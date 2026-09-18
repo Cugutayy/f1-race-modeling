@@ -111,7 +111,7 @@ def run_checks(
     try:
         passed, detail = _check_benchmark(benchmark)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            passed, detail = False, f"{type(exc).__name__}: {exc}"
+        passed, detail = False, f"{type(exc).__name__}: {exc}"
     checks["benchmark"] = {"passed": passed, "detail": detail}
     try:
         loaded = load_manifest(manifest, model_path=model)

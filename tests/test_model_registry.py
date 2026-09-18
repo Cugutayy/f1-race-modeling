@@ -14,7 +14,7 @@ def _manifest(model_sha):
         schema_version=1, model_id="rank-v1", model_sha256=model_sha,
         feature_schema_sha256=_sha("features"), training_data_sha256=_sha("data"),
         calibration_sha256=_sha("calibration"), trained_until="2026-03-01T00:00:00Z",
-        benchmark_run_id="sealed-001", git_sha="abc123",
+        benchmark_run_id="sealed-001", git_sha="a" * 40,
     )
 
 
@@ -34,3 +34,18 @@ def test_manifest_rejects_mutated_model(tmp_path):
     model.write_bytes(b"tampered")
     with pytest.raises(ValueError, match="does not match"):
         load_manifest(manifest, model_path=model)
+
+
+def test_manifest_rejects_non_commit_git_provenance():
+    with pytest.raises(ValueError, match="git_sha"):
+        _manifest("a" * 64).__class__(
+            schema_version=1,
+            model_id="rank-v1",
+            model_sha256="a" * 64,
+            feature_schema_sha256="b" * 64,
+            training_data_sha256="c" * 64,
+            calibration_sha256="d" * 64,
+            trained_until="2026-03-01T00:00:00Z",
+            benchmark_run_id="sealed-001",
+            git_sha="abc123",
+        ).validate()
