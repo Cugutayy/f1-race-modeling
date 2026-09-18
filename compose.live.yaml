@@ -26,9 +26,11 @@ services:
       F1_STRICT_MODEL_PATH: /models/next_lap_strict.joblib
       F1_STRATEGY_PRIORS_PATH: /models/strategy_priors.json
       F1_MODEL_EVIDENCE_PATH: /models/model_evidence.json
+      F1_PREDICTION_LEDGER_PATH: /data/predictions/predictions.jsonl
     volumes:
       - live-data:/data/live:ro
       - ./reports/local/lap-strict:/models:ro
+      - prediction-ledger:/data/predictions
     ports:
       - "${F1_API_PORT:-8000}:8000"
     depends_on:
@@ -47,3 +49,4 @@ services:
 
 volumes:
   live-data:
+  prediction-ledger:
