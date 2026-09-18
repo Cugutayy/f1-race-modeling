@@ -700,7 +700,7 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
             payload["start_status"] = _start_status(row)
             payload_rows.append(payload)
         normalized_payload[provider] = payload_rows
-    verification_status = "FAIL" if hard else ("PASS_WITH_GAPS" if insufficient_hard else "PASS")
+    verification_status = "FAIL" if hard else ("PASS_WITH_GAPS" if insufficient_hard or audit_gaps else "PASS")
     return {
         "schema_version": 4,
         "kind": "cross_provider_completed_race_reconciliation",
@@ -711,9 +711,11 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
         "hard_mismatch_count": len(hard),
         "warning_count": len(warnings),
         "insufficient_hard_count": len(insufficient_hard),
+        "audit_gap_count": len(audit_gaps),
         "insufficient_secondary_count": len(insufficient_secondary),
         "mismatches": [asdict(row) for row in mismatches],
         "insufficient_hard_evidence": insufficient_hard,
+        "audit_gaps": audit_gaps,
         "insufficient_secondary": insufficient_secondary,
         "normalized": normalized_payload,
         "normalized_sha256": {
@@ -724,9 +726,13 @@ def reconcile_results(provider_rows: dict[str, list[ResultRow]]) -> dict[str, An
         "policy": {
             "identity_key": "race driver number",
             "hard_fields": list(HARD_FIELDS),
+            "audit_fields": list(AUDIT_FIELDS),
             "secondary_fields": list(SECONDARY_FIELDS),
             "raw_status_class_is_audit_only": True,
             "nonfinisher_position_may_be_unknown": True,
+            "nonfinisher_position_gap_blocks_release": False,
+            "missing_start_status_blocks_release": False,
+            "explicit_start_status_disagreement_is_hard": True,
             "missing_hard_evidence_is_not_mismatch": True,
             "missing_secondary_is_unknown": True,
             "repair_disagreements": False,
