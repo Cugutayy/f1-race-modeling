@@ -488,7 +488,7 @@ def readyz(_: None = Depends(_authorize)) -> JSONResponse:
         "session_key": state.get("session_key"),
         "current_lap": state.get("current_lap"),
         "data_truth": truth,
-        "model_evidence_run": evidence.get("run_id") if isinstance(evidence, dict) else None,
+        "model_evidence_run": evidence.get("benchmark_run_id") if isinstance(evidence, dict) else None,
     }))
 
 
