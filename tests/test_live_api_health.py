@@ -1,5 +1,6 @@
-from fastapi.testclient import TestClient
+import json
 
+import pytest
 from f1_research import live_api
 
 
@@ -13,9 +14,10 @@ def test_readyz_requires_installed_production_artifacts(monkeypatch, tmp_path):
         live_api, "_read_model_evidence",
         lambda: (_ for _ in ()).throw(live_api.HTTPException(status_code=404, detail="missing")),
     )
-    response = TestClient(live_api.app).get("/readyz")
-    assert response.status_code == 503
-    assert set(response.json()["detail"]["missing"]) == {
+    with pytest.raises(live_api.HTTPException) as exc:
+        live_api.readyz(None)
+    assert exc.value.status_code == 503
+    assert set(exc.value.detail["missing"]) == {
         "strict_model", "strategy_priors", "model_evidence",
     }
 
@@ -28,9 +30,9 @@ def test_modelz_exposes_sealed_evidence(monkeypatch):
         "sealed_test_events": 12,
         "benchmark_run_id": "sealed-abc",
     })
-    response = TestClient(live_api.app).get("/modelz")
+    response = live_api.modelz(None)
     assert response.status_code == 200
-    payload = response.json()
+    payload = json.loads(response.body)
     assert payload["live_pace_model"]["artifact_schema_version"] == 7
     assert payload["race_outcome_model_evidence"]["sealed_test_events"] == 12
     assert payload["race_outcome_model_evidence"]["benchmark_run_id"] == "sealed-abc"
