@@ -65,14 +65,27 @@ def _check_benchmark(path: Path) -> tuple[bool, str]:
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("data_kind") != "historical":
         return False, "benchmark is not historical"
-    if int(report.get("test_events", 0)) < 5:
-        return False, "fewer than 5 sealed/held-out events"
+    if int(report.get("test_events", 0)) < 12:
+        return False, "fewer than 12 sealed/held-out events"
     if not report.get("predictions") or not report.get("metrics"):
         return False, "benchmark has no predictions/metrics"
     if report.get("schema_version") != 2:
         return False, "benchmark must use sealed-evidence schema v2"
     if not report.get("winner_calibration"):
         return False, "benchmark lacks winner calibration/ECE evidence"
+    uncertainty_path = path.parent / "evidence" / "uncertainty.json"
+    if not uncertainty_path.exists():
+        return False, "benchmark lacks event-level uncertainty evidence"
+    uncertainty = json.loads(uncertainty_path.read_text(encoding="utf-8"))
+    if uncertainty.get("unit") != "whole race event":
+        return False, "benchmark uncertainty is not event-level"
+    if int(uncertainty.get("bootstrap_samples", 0)) < 10000:
+        return False, "benchmark uncertainty uses fewer than 10000 event-bootstrap samples"
+    if uncertainty.get("baseline") != "qualifying_order":
+        return False, "benchmark uncertainty baseline is not qualifying_order"
+    paired = uncertainty.get("paired_vs_baseline")
+    if not isinstance(paired, dict) or not paired:
+        return False, "benchmark lacks paired uncertainty versus qualifying baseline"
     audit = report.get("audit")
     if not isinstance(audit, dict) or audit.get("test_updates_model") is not False:
         return False, "benchmark does not prove sealed-test isolation"
