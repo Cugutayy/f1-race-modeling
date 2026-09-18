@@ -33,9 +33,10 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
     monkeypatch.setattr(rel, "benchmark_v2", lambda clean, **kwargs: (
         pd.DataFrame([{"event_id": "E7", "model": "modern::extra_trees",
                        "position_mae": 0.0, "winner_log_loss": 0.1,
-                       "winner_brier": 0.01, "winner_accuracy": 1.0, "podium_recall": 1.0}]),
+                       "winner_brier": 0.01, "winner_accuracy": 1.0, "podium_recall": 1.0,
+                       "spearman_rank": 1.0, "kendall_rank": 1.0, "ndcg": 1.0}]),
         pd.DataFrame([{"event_id": "E7", "driver": "AAA", "model": "modern::extra_trees",
-                       "actual_position": 1, "predicted_position": 1}]),
+                       "actual_position": 1, "predicted_position": 1, "win_probability": 1.0}]),
         {"split": {"fit": ["E0", "E1"], "tuning": ["E2", "E3"],
                    "calibration": ["E4", "E5"], "test": ["E6", "E7"]},
          "selected_modern": {"name": "extra_trees", "params": {}},
