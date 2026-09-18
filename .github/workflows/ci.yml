@@ -2,7 +2,7 @@ name: Research checks
 on:
   pull_request:
   push:
-    branches: [main, feat/production-readiness-v1]
+    branches: [main]
 permissions:
   contents: read
 concurrency:
