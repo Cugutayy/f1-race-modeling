@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from f1_research import live_api
