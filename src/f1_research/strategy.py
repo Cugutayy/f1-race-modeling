@@ -472,6 +472,13 @@ def simulate(
             str(driver.driver_number): driver.dnf_hazard_per_lap for driver in drivers
         },
         "strategy_overrides": {str(key): asdict(value) for key, value in strategies.items()},
+        "strategy_offset_semantics": (
+            "0=pit immediately before first future lap; N>0=run N future laps then pit"
+        ),
+        "common_random_numbers": (
+            "pit-loss draws are pre-sampled for every future offset/driver so "
+            "counterfactual timing does not shift downstream RNG streams"
+        ),
         "status": "research simulation; not calibrated team strategy software",
     }
     return results, audit
