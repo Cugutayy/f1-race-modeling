@@ -12,7 +12,6 @@ on:
   push:
     branches:
       - main
-      - feat/production-readiness-v1
     paths:
       - 'Dockerfile.worker'
       - 'compose.live.yaml'
