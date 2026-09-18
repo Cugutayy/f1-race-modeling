@@ -236,13 +236,30 @@ def _relative_compound_delta(
     return current - start
 
 
-def _compress_gaps(total: np.ndarray, mask: np.ndarray, multiplier: float) -> None:
-    """Compress only the selected Monte Carlo samples around their current leader."""
+def _compress_gaps(
+    total: np.ndarray,
+    mask: np.ndarray,
+    multiplier: float,
+    active_mask: np.ndarray | None = None,
+) -> None:
+    """Compress selected samples around the current active leader only."""
     if not np.any(mask):
         return
-    selected = total[mask]
-    leader = selected.min(axis=1, keepdims=True)
-    total[mask] = leader + (selected - leader) * multiplier
+    selected = total[mask].copy()
+    if active_mask is None:
+        leader = selected.min(axis=1, keepdims=True)
+        total[mask] = leader + (selected - leader) * multiplier
+        return
+
+    selected_active = np.asarray(active_mask[mask], dtype=bool)
+    if selected_active.shape != selected.shape:
+        raise ValueError("active_mask shape must match total")
+    leader = np.min(np.where(selected_active, selected, np.inf), axis=1, keepdims=True)
+    valid = np.isfinite(leader[:, 0])
+    compressed = leader + (selected - leader) * multiplier
+    update = selected_active & valid[:, None]
+    selected[update] = compressed[update]
+    total[mask] = selected
 
 
 def _sample_first_event_lap(
@@ -263,6 +280,7 @@ def _traffic_penalty(
     rng: np.random.Generator,
     config: SimulationConfig,
     disabled_samples: np.ndarray | None = None,
+    active_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int]:
     """Approximate close-following loss from the simulated order at lap start.
 
@@ -275,14 +293,28 @@ def _traffic_penalty(
     if m < 2 or config.traffic_window_s <= 0 or config.traffic_penalty_mean_s <= 0:
         return penalty, 0
 
-    order = np.argsort(total, axis=1, kind="stable")
-    ordered = np.take_along_axis(total, order, axis=1)
-    gaps = np.diff(ordered, axis=1)
-    close = (gaps > 0) & (gaps < config.traffic_window_s)
+    if active_mask is None:
+        active_mask = np.ones_like(total, dtype=bool)
+    else:
+        active_mask = np.asarray(active_mask, dtype=bool)
+        if active_mask.shape != total.shape:
+            raise ValueError("active_mask shape must match total")
+
+    sortable = np.where(active_mask, total, np.inf)
+    order = np.argsort(sortable, axis=1, kind="stable")
+    ordered = np.take_along_axis(sortable, order, axis=1)
+    ordered_active = np.take_along_axis(active_mask, order, axis=1)
+    pair_active = ordered_active[:, :-1] & ordered_active[:, 1:]
+    gaps = np.full((n, m - 1), np.inf, dtype=float)
+    np.subtract(ordered[:, 1:], ordered[:, :-1], out=gaps, where=pair_active)
+    close = pair_active & (gaps > 0) & (gaps < config.traffic_window_s)
     if disabled_samples is not None:
         close &= ~disabled_samples[:, None]
 
-    intensity = np.clip(1.0 - gaps / config.traffic_window_s, 0.0, 1.0)
+    intensity = np.zeros_like(gaps)
+    np.divide(gaps, config.traffic_window_s, out=intensity, where=np.isfinite(gaps))
+    intensity = np.clip(1.0 - intensity, 0.0, 1.0)
+    intensity[~pair_active] = 0.0
     mean = config.traffic_penalty_mean_s * intensity
     draw = rng.normal(mean, config.traffic_penalty_sd_s, size=(n, m - 1))
     draw = np.where(close, np.maximum(0.0, draw), 0.0)
