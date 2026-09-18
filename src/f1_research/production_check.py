@@ -33,6 +33,8 @@ def _check_benchmark(path: Path) -> tuple[bool, str]:
         return False, "benchmark has no predictions/metrics"
     if report.get("schema_version") != 2:
         return False, "benchmark must use sealed-evidence schema v2"
+    if not report.get("winner_calibration"):
+        return False, "benchmark lacks winner calibration/ECE evidence"
     audit = report.get("audit")
     if not isinstance(audit, dict) or audit.get("test_updates_model") is not False:
         return False, "benchmark does not prove sealed-test isolation"
