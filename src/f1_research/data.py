@@ -101,6 +101,11 @@ def collect(years, cache, offline=False):
                 r["Driver"]["driverId"]: r
                 for r in quali_map.get(rnd, {}).get("QualifyingResults", [])
             }
+            race_total_laps = max(
+                int(result.get("laps", 0) or 0) for result in race["Results"]
+            )
+            if race_total_laps <= 0:
+                raise ValueError(f"Race {year}-{rnd:02d} has no positive lap count")
             for result in race["Results"]:
                 driver = result["Driver"]["driverId"]
                 q = qualifying.get(driver, {})
@@ -117,6 +122,8 @@ def collect(years, cache, offline=False):
                     "points": float(result["points"]),
                     "status": str(result["status"]),
                     "starter_count": len(race["Results"]),
+                    "laps_completed": int(result.get("laps", 0) or 0),
+                    "race_total_laps": race_total_laps,
                     "dnf": int(not (result["status"] == "Finished"
                                     or result["status"].startswith("+"))),
                 })
@@ -181,6 +188,22 @@ def validate(frame):
         df["status"].isna().any() | df["status"].astype(str).str.strip().eq("").any()
     ):
         raise ValueError("Missing result status")
+    if {"laps_completed", "race_total_laps"} <= set(df):
+        for column in ("laps_completed", "race_total_laps"):
+            df[column] = pd.to_numeric(df[column], errors="raise")
+            if (
+                ~np.isfinite(df[column])
+                | (df[column] < 0)
+                | ~df[column].mod(1).eq(0)
+            ).any():
+                raise ValueError(f"Invalid {column}")
+        if (df["race_total_laps"] <= 0).any():
+            raise ValueError("race_total_laps must be positive")
+        if (df["laps_completed"] > df["race_total_laps"]).any():
+            raise ValueError("laps_completed cannot exceed race_total_laps")
+        for event_id, group in df.groupby("event_id"):
+            if group["race_total_laps"].nunique() != 1:
+                raise ValueError(f"Inconsistent race_total_laps for {event_id}")
     return df.sort_values(["date", "event_id", "driver"]).reset_index(drop=True)
 
 
