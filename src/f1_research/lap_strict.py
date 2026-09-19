@@ -48,12 +48,21 @@ class StrictBenchmark:
     test_session: int
     selected_regressor: str
     green_rows: int
+    calibration_events: int
     green_mae_s: float
     green_rmse_s: float
     recent_median_mae_s: float
     last_lap_mae_s: float
     interval_coverage: float
     interval_mean_width_s: float
+    coverage_50: float
+    coverage_80: float
+    coverage_90: float
+    coverage_95: float
+    interval_width_50_s: float
+    interval_width_80_s: float
+    interval_width_90_s: float
+    interval_width_95_s: float
     regime_accuracy: float
     regime_log_loss: float
 
@@ -203,10 +212,16 @@ def fit_strict_mixture(
     *,
     specs: tuple[LapModelSpec, ...] | None = None,
     alpha: float = 0.10,
+    calibration_events: int = 3,
 ) -> tuple[dict[str, Any], pd.DataFrame, dict[str, Any]]:
-    """Older races fit -> one tune -> one conformal calibration -> sealed test."""
-    if len(datasets) < 4:
-        raise ValueError("Need at least four chronological race datasets")
+    """Older races fit -> one tune -> multi-event conformal calibration -> sealed test."""
+    if calibration_events < 2:
+        raise ValueError("At least two calibration events are required")
+    if len(datasets) < calibration_events + 3:
+        raise ValueError(
+            f"Need at least {calibration_events + 3} chronological race datasets "
+            "for fit, tuning, multi-event calibration and sealed test"
+        )
     if not 0 < alpha < 0.5:
         raise ValueError("alpha must be between 0 and 0.5")
     specs = specs or (
@@ -218,9 +233,13 @@ def fit_strict_mixture(
         if missing:
             raise ValueError(f"Strict dataset missing columns: {sorted(missing)}")
 
-    train = pd.concat(datasets[:-3], ignore_index=True)
-    tuning = datasets[-3].copy()
-    calibration = datasets[-2].copy()
+    tuning_index = len(datasets) - calibration_events - 2
+    train = pd.concat(datasets[:tuning_index], ignore_index=True)
+    tuning = datasets[tuning_index].copy()
+    calibration_frames = [
+        frame.copy()
+        for frame in datasets[tuning_index + 1:-1]
+    ]
     test = datasets[-1].copy()
 
     selected, trials = _select(train, tuning, specs)
@@ -233,8 +252,21 @@ def fit_strict_mixture(
         classifier_train[STRICT_FEATURES], classifier_train.lap_regime.astype(str)
     )
 
-    cal_green = _green(calibration)
+    calibration_green = [_green(frame) for frame in calibration_frames]
+    if any(frame.empty for frame in calibration_green):
+        raise ValueError("A conformal calibration event has no green laps")
+    cal_green = pd.concat(calibration_green, ignore_index=True)
     cal_prediction = regressor.predict(cal_green[STRICT_FEATURES])
+    coverage_levels = (0.50, 0.80, 0.90, 0.95)
+    conformal_radii = {
+        f"{coverage:.2f}": _conformal_radius(
+            cal_green.target_s.to_numpy(),
+            cal_prediction,
+            1.0 - coverage,
+        )
+        for coverage in coverage_levels
+    }
+    requested_coverage = 1.0 - alpha
     radius = _conformal_radius(cal_green.target_s.to_numpy(), cal_prediction, alpha)
 
     test_green = _green(test)
@@ -245,6 +277,19 @@ def fit_strict_mixture(
     lower, upper = prediction - radius, prediction + radius
     actual = test_green.target_s.to_numpy(dtype=float)
     coverage = float(((actual >= lower) & (actual <= upper)).mean())
+    coverage_evidence = {}
+    for nominal in coverage_levels:
+        key = f"{nominal:.2f}"
+        level_radius = conformal_radii[key]
+        empirical = float(
+            ((actual >= prediction - level_radius) & (actual <= prediction + level_radius)).mean()
+        )
+        coverage_evidence[key] = {
+            "nominal": nominal,
+            "empirical": empirical,
+            "radius_s": level_radius,
+            "mean_width_s": 2.0 * level_radius,
+        }
 
     regime_test = test[test.lap_regime.notna()].copy()
     if regime_test.empty:
@@ -259,12 +304,21 @@ def fit_strict_mixture(
         test_session=int(test.session_key.iloc[0]),
         selected_regressor=selected.name,
         green_rows=len(test_green),
+        calibration_events=len(calibration_frames),
         green_mae_s=green_mae,
         green_rmse_s=green_rmse,
         recent_median_mae_s=recent_median_mae,
         last_lap_mae_s=last_lap_mae,
         interval_coverage=coverage,
         interval_mean_width_s=2 * radius,
+        coverage_50=coverage_evidence["0.50"]["empirical"],
+        coverage_80=coverage_evidence["0.80"]["empirical"],
+        coverage_90=coverage_evidence["0.90"]["empirical"],
+        coverage_95=coverage_evidence["0.95"]["empirical"],
+        interval_width_50_s=coverage_evidence["0.50"]["mean_width_s"],
+        interval_width_80_s=coverage_evidence["0.80"]["mean_width_s"],
+        interval_width_90_s=coverage_evidence["0.90"]["mean_width_s"],
+        interval_width_95_s=coverage_evidence["0.95"]["mean_width_s"],
         regime_accuracy=regime_accuracy,
         regime_log_loss=regime_loss,
     )
@@ -277,22 +331,35 @@ def fit_strict_mixture(
         "pace_regressor": regressor,
         "selected_regressor": selected.name,
         "conformal_alpha": alpha,
+        "conformal_nominal_coverage": requested_coverage,
         "conformal_radius_s": radius,
+        "conformal_radii_s": conformal_radii,
         "trained_through_session": int(tuning.session_key.iloc[0]),
-        "calibration_session": int(calibration.session_key.iloc[0]),
+        "calibration_sessions": [
+            int(frame.session_key.iloc[0]) for frame in calibration_frames
+        ],
         "sealed_test_session": int(test.session_key.iloc[0]),
         "retrospective_stint_features_used": False,
     }
     audit = {
-        "protocol": "older races fit -> one race tune -> one race conformal calibration -> sealed test",
+        "protocol": (
+            "older races fit -> one race tune -> multi-event pooled conformal calibration "
+            "-> sealed test"
+        ),
         "feature_policy": "strict_asof_only",
         "excluded_retrospective_features": ["compound", "tyre_age", "stint_number"],
+        "calibration_sessions": [
+            int(frame.session_key.iloc[0]) for frame in calibration_frames
+        ],
         "regressor_trials": [
             {key: (None if isinstance(value, float) and np.isinf(value) else value) for key, value in row.items()}
             for row in trials
         ],
         "conformal_alpha": alpha,
+        "conformal_nominal_coverage": requested_coverage,
         "conformal_radius_s": radius,
+        "conformal_radii_s": conformal_radii,
+        "sealed_test_coverage": coverage_evidence,
         "test_updates_model": False,
         "baseline_comparison": {
             "recent_median_5_mae_s": recent_median_mae,
