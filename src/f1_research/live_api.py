@@ -180,6 +180,24 @@ def _read_model_evidence() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Model evidence kind is unsupported")
     if not isinstance(value.get("models"), list) or not isinstance(value.get("sealed_test_events"), int):
         raise HTTPException(status_code=503, detail="Model evidence is incomplete")
+    model_release = value.get("model_release")
+    if not isinstance(model_release, dict):
+        raise HTTPException(status_code=503, detail="Model evidence has no verified model release binding")
+    git_sha = str(model_release.get("git_sha") or "").strip().lower()
+    if len(git_sha) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in git_sha
+    ):
+        raise HTTPException(status_code=503, detail="Model evidence release Git SHA is invalid")
+    for field in (
+        "model_sha256",
+        "model_manifest_sha256",
+        "feature_schema_sha256",
+        "training_data_sha256",
+        "calibration_sha256",
+    ):
+        _valid_sha256(model_release.get(field), field=f"model_release.{field}")
+    if not str(model_release.get("model_id") or "").strip():
+        raise HTTPException(status_code=503, detail="Model evidence release model_id is missing")
     return value
 
 
@@ -800,6 +818,7 @@ def modelz(_: None = Depends(_authorize)) -> JSONResponse:
             "sealed_test_events": evidence.get("sealed_test_events"),
             "benchmark_run_id": evidence.get("benchmark_run_id"),
             "source_provenance_sha256": evidence.get("source_provenance_sha256"),
+            "model_release": evidence.get("model_release"),
         },
     }))
 

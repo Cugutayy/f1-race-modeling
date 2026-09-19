@@ -14,6 +14,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .model_registry import sha256_file
+from .revision import validate_git_sha
+
 CORE_MODELS = (
     "rank_ensemble",
     "modern::catboost",
@@ -131,13 +134,63 @@ def _provenance_digest(provenance: dict[str, Any]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _valid_sha256(value: Any, *, field: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise ValueError(f"{field} must be a SHA-256 hex digest")
+    return digest
+
+
+def _model_release_binding(
+    report: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+    model_path: Path,
+) -> dict[str, Any]:
+    if manifest.get("schema_version") != 1:
+        raise ValueError("Unsupported model manifest schema")
+    if manifest.get("benchmark_run_id") != report.get("run_id"):
+        raise ValueError("Model manifest benchmark run does not match benchmark report")
+    git_sha = validate_git_sha(str(manifest.get("git_sha") or ""), field="model release git_sha")
+    expected_model_sha = _valid_sha256(manifest.get("model_sha256"), field="model_sha256")
+    if not model_path.exists():
+        raise FileNotFoundError(model_path)
+    actual_model_sha = sha256_file(model_path)
+    if actual_model_sha != expected_model_sha:
+        raise ValueError("Model bytes do not match model manifest SHA-256")
+    return {
+        "git_sha": git_sha,
+        "model_id": manifest.get("model_id"),
+        "model_sha256": expected_model_sha,
+        "model_manifest_sha256": sha256_file(manifest_path),
+        "feature_schema_sha256": _valid_sha256(
+            manifest.get("feature_schema_sha256"),
+            field="feature_schema_sha256",
+        ),
+        "training_data_sha256": _valid_sha256(
+            manifest.get("training_data_sha256"),
+            field="training_data_sha256",
+        ),
+        "calibration_sha256": _valid_sha256(
+            manifest.get("calibration_sha256"),
+            field="calibration_sha256",
+        ),
+        "trained_until": manifest.get("trained_until"),
+    }
+
+
 def build_model_evidence(
     report: dict[str, Any],
     selection: dict[str, Any],
     uncertainty: dict[str, Any] | None = None,
+    *,
+    model_release: dict[str, Any],
 ) -> dict[str, Any]:
     if int(report.get("schema_version", 0)) < 2:
         raise ValueError("Unsupported benchmark report schema")
+    if not isinstance(model_release, dict) or not model_release:
+        raise ValueError("Verified model release binding is required")
     split = selection.get("split")
     if not isinstance(split, dict) or not isinstance(split.get("test"), list):
         raise ValueError("Selection artifact is missing the sealed test split")
@@ -162,6 +215,7 @@ def build_model_evidence(
         "schema_version": 1,
         "evidence_kind": "retrospective_sealed_historical_benchmark",
         "benchmark_run_id": report.get("run_id"),
+        "model_release": model_release,
         "provider": provenance.get("provider"),
         "years": years,
         "source_provenance_sha256": _provenance_digest(provenance),
@@ -202,8 +256,23 @@ def generate_model_evidence(benchmark_dir: Path, output: Path) -> dict[str, Any]
         benchmark_dir / "evidence" / "uncertainty.json",
         required=False,
     )
-    assert report is not None and selection is not None
-    payload = build_model_evidence(report, selection, uncertainty)
+    release_root = benchmark_dir.parent
+    manifest_path = release_root / "model_manifest.json"
+    model_path = release_root / "model.joblib"
+    manifest = _read_json(manifest_path)
+    assert report is not None and selection is not None and manifest is not None
+    model_release = _model_release_binding(
+        report,
+        manifest,
+        manifest_path=manifest_path,
+        model_path=model_path,
+    )
+    payload = build_model_evidence(
+        report,
+        selection,
+        uncertainty,
+        model_release=model_release,
+    )
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")

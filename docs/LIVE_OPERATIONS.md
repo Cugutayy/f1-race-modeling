@@ -152,17 +152,21 @@ python -m f1_research.benchmark_evidence \
   --samples 10000
 ```
 
-Then build the compact evidence file consumed by the live product:
+The standalone `benchmark-v2` output is analysis evidence, not a deployable model
+release. A compact live evidence file is produced only from a sealed release directory
+that contains the matching `model.joblib` and `model_manifest.json`:
 
 ```bash
 python -m f1_research.model_evidence \
-  --benchmark-dir reports/local/benchmark-v2 \
+  --benchmark-dir reports/model-release/release/benchmark \
   --output reports/local/model_evidence.json
 ```
 
-`model_evidence.json` is generated from the versioned sealed benchmark outputs. It is
-not a hand-written UI claim. If uncertainty has not been generated, the compact file
-leaves uncertainty unavailable rather than inventing an interval.
+`model_evidence.json` binds the displayed sealed metrics to the exact release Git SHA,
+model byte SHA, model-manifest SHA, feature schema, training snapshot and calibration
+hashes. If the manifest does not match the benchmark run or the model bytes do not match
+the manifest, evidence generation fails closed. Missing uncertainty remains unavailable
+rather than being inferred.
 
 ## 5. Live capture
 
