@@ -1,0 +1,155 @@
+name: Strict live pace evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: Completed F1 season used for strict pace evidence
+        required: true
+        default: '2026'
+      race_count:
+        description: Number of latest completed races; must be at least 6
+        required: true
+        default: '8'
+  push:
+    branches: [main]
+    paths:
+      - '.release-trigger'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strict-live-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      YEAR: ${{ inputs.year || '2026' }}
+      RACE_COUNT: ${{ inputs.race_count || '8' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . --no-deps
+      - name: Build strict live pace release from historical OpenF1
+        run: |
+          python -m f1_research.strict_pipeline \
+            --year "$YEAR" \
+            --race-count "$RACE_COUNT" \
+            --output reports/strict-live
+      - name: Verify strict release contract
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          import joblib
+          import numpy as np
+
+          from f1_research.lap_pipeline import ENDPOINTS
+          from f1_research.lap_strict import STRICT_FEATURES
+          from f1_research.strict_pipeline import _canonical_sha256
+
+          root = Path("reports/strict-live")
+          model_path = root / "next_lap_strict.joblib"
+          priors_path = root / "strategy_priors.json"
+          report_path = root / "strict_report.json"
+          release_path = root / "strict_release_manifest.json"
+          for path in (model_path, priors_path, report_path, release_path):
+              assert path.is_file() and path.stat().st_size > 0, f"missing release artifact: {path}"
+
+          artifact = joblib.load(model_path)
+          report = json.loads(report_path.read_text())
+          release = json.loads(release_path.read_text())
+          priors = json.loads(priors_path.read_text())
+
+          assert artifact["task"] == "next_lap_strict_mixture"
+          assert artifact["features"] == STRICT_FEATURES
+          assert artifact["retrospective_stint_features_used"] is False
+          assert report["task"] == "next_lap_strict_mixture"
+          assert report["feature_policy"] == "strict_asof_only"
+          assert report["features"] == STRICT_FEATURES
+          assert report["audit"]["test_updates_model"] is False
+          assert len(report["sessions"]) >= 6
+
+          assert release["schema_version"] == 1
+          assert release["evidence_kind"] == "strict_live_pace_release"
+          assert release["git_sha"] == os.environ["GITHUB_SHA"].lower()
+          assert release["feature_policy"] == "strict_asof_only"
+          assert release["feature_schema_sha256"] == _canonical_sha256(STRICT_FEATURES)
+          assert release["retrospective_stint_features_used"] is False
+          assert release["model_sha256"] == hashlib.sha256(model_path.read_bytes()).hexdigest()
+          assert release["strategy_priors_sha256"] == hashlib.sha256(priors_path.read_bytes()).hexdigest()
+          assert release["strict_report_sha256"] == hashlib.sha256(report_path.read_bytes()).hexdigest()
+          assert release["calibration_sessions"] == artifact["calibration_sessions"]
+          assert release["sealed_test_session"] == artifact["sealed_test_session"]
+          assert release["sealed_test_session"] not in release["calibration_sessions"]
+          assert len(release["calibration_sessions"]) >= 2
+          assert set(release["conformal_radii_s"]) == {"0.50", "0.80", "0.90", "0.95"}
+
+          radii = [float(release["conformal_radii_s"][key]) for key in ("0.50", "0.80", "0.90", "0.95")]
+          assert all(np.isfinite(radii))
+          assert radii == sorted(radii)
+          assert all(value > 0 for value in radii)
+
+          metric = report["metrics"][0]
+          coverages = [float(metric[key]) for key in ("coverage_50", "coverage_80", "coverage_90", "coverage_95")]
+          widths = [
+              float(metric[key])
+              for key in (
+                  "interval_width_50_s",
+                  "interval_width_80_s",
+                  "interval_width_90_s",
+                  "interval_width_95_s",
+              )
+          ]
+          assert all(0.0 <= value <= 1.0 for value in coverages)
+          assert widths == sorted(widths)
+          assert all(value > 0 for value in widths)
+
+          source_sessions = release["source_sessions"]
+          assert len(source_sessions) == len(report["sessions"])
+          assert [row["session_key"] for row in source_sessions] == report["sessions"]
+          for row in source_sessions:
+              assert set(row["sources"]) == set(ENDPOINTS)
+              assert len(row["dataset_sha256"]) == 64
+              assert len(row["source_content_sha256"]) == 64
+              for source in row["sources"].values():
+                  assert len(source["sha256"]) == 64
+                  assert source["bytes"] >= 0
+          content_index = [
+              {
+                  "session_key": row["session_key"],
+                  "source_content_sha256": row["source_content_sha256"],
+              }
+              for row in source_sessions
+          ]
+          assert release["source_evidence_sha256"] == _canonical_sha256(content_index)
+          assert isinstance(priors.get("priors"), dict) and priors["priors"]
+          print(json.dumps({
+              "git_sha": release["git_sha"],
+              "sessions": release["sessions"],
+              "selected_regressor": release["selected_regressor"],
+              "sealed_test_session": release["sealed_test_session"],
+              "calibration_sessions": release["calibration_sessions"],
+              "model_sha256": release["model_sha256"],
+              "source_evidence_sha256": release["source_evidence_sha256"],
+          }, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strict-live-release-${{ github.run_id }}
+          path: reports/strict-live
+          if-no-files-found: error
+          retention-days: 90
