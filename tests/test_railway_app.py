@@ -6,7 +6,15 @@ from f1_research import live_api, railway_app
 
 
 def test_railway_liveness_is_minimal_and_main_api_auth_stays_enforced(monkeypatch):
-    assert railway_app.railway_healthz() == {"ok": True}
+    health = railway_app.railway_healthz()
+    assert health["ok"] is True
+    assert health["capture"] == {
+        "credentials_configured": False,
+        "autostart_enabled": False,
+        "supervisor_running": False,
+        "capture_process_running": False,
+        "capture_exit_code": None,
+    }
 
     monkeypatch.setenv("F1_API_TOKEN", "secret-token")
     with pytest.raises(HTTPException) as exc:
