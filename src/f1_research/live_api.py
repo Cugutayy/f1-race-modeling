@@ -36,17 +36,21 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
 DEFAULT_MODEL = ROOT / "reports" / "local" / "lap-strict" / "next_lap_strict.joblib"
 DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-strict" / "strategy_priors.json"
+DEFAULT_STRICT_RELEASE_MANIFEST = (
+    ROOT / "reports" / "local" / "lap-strict" / "strict_release_manifest.json"
+)
 DEFAULT_EVIDENCE = ROOT / "reports" / "local" / "model_evidence.json"
 DEFAULT_PREDICTION_LEDGER = ROOT / "reports" / "local" / "live" / "predictions.jsonl"
 MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
+MAX_STRICT_RELEASE_BYTES = 4 * 1024 * 1024
 MAX_TELEMETRY_TAIL_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_LIVE_AGE_S = 20.0
 
 app = FastAPI(title="F1 Race Intelligence API", version="1.0.0", docs_url="/docs")
 
-_artifact_cache: dict[str, Any] = {"key": None, "value": None}
+_artifact_cache: dict[str, Any] = {"key": None, "value": None, "release": None}
 
 
 def _path(env_name: str, default: Path) -> Path:
@@ -73,6 +77,10 @@ def _model_path() -> Path:
 
 def _priors_path() -> Path:
     return _path("F1_STRATEGY_PRIORS_PATH", DEFAULT_PRIORS)
+
+
+def _strict_release_manifest_path() -> Path:
+    return _path("F1_STRICT_RELEASE_MANIFEST_PATH", DEFAULT_STRICT_RELEASE_MANIFEST)
 
 
 def _evidence_path() -> Path:
@@ -175,6 +183,168 @@ def _read_model_evidence() -> dict[str, Any]:
     return value
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    return sha256_json(value)
+
+
+def _valid_sha256(value: Any, *, field: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise HTTPException(status_code=503, detail=f"{field} is not a valid SHA-256 digest")
+    return digest
+
+
+def _read_strict_release_manifest() -> dict[str, Any]:
+    path = _strict_release_manifest_path()
+    if not path.exists():
+        raise HTTPException(status_code=503, detail="Strict release manifest is not installed")
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > MAX_STRICT_RELEASE_BYTES:
+            raise HTTPException(status_code=503, detail="Strict release manifest failed size validation")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Strict release manifest is unreadable") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise HTTPException(status_code=503, detail="Strict release manifest schema is unsupported")
+    if value.get("evidence_kind") != "strict_live_pace_release":
+        raise HTTPException(status_code=503, detail="Strict release manifest kind is unsupported")
+    if value.get("feature_policy") != "strict_asof_only":
+        raise HTTPException(status_code=503, detail="Strict release feature policy is unsupported")
+    if value.get("retrospective_stint_features_used") is not False:
+        raise HTTPException(
+            status_code=503,
+            detail="Strict release permits retrospective stint features",
+        )
+    return value
+
+
+def _file_signature(path: Path) -> tuple[str, int | None, int | None]:
+    if not path.exists():
+        return (str(path), None, None)
+    stat = path.stat()
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _strict_runtime_key() -> tuple[Any, ...]:
+    return (
+        _file_signature(_model_path()),
+        _file_signature(_priors_path()),
+        _file_signature(_strict_release_manifest_path()),
+        _env_flag("F1_ALLOW_UNVERIFIED_STRICT_MODEL", default=False),
+    )
+
+
+def _verify_strict_release(artifact: dict[str, Any] | None = None) -> dict[str, Any]:
+    if _env_flag("F1_ALLOW_UNVERIFIED_STRICT_MODEL", default=False):
+        return {
+            "verified": False,
+            "production_eligible": False,
+            "override": "F1_ALLOW_UNVERIFIED_STRICT_MODEL",
+        }
+
+    manifest = _read_strict_release_manifest()
+    model_path = _model_path()
+    priors_path = _priors_path()
+    if not model_path.exists():
+        raise HTTPException(status_code=503, detail="Strict live pace model is unavailable")
+    if not priors_path.exists():
+        raise HTTPException(status_code=503, detail="Calibrated strategy priors are unavailable")
+
+    model_sha = _valid_sha256(manifest.get("model_sha256"), field="model_sha256")
+    priors_sha = _valid_sha256(
+        manifest.get("strategy_priors_sha256"),
+        field="strategy_priors_sha256",
+    )
+    feature_sha = _valid_sha256(
+        manifest.get("feature_schema_sha256"),
+        field="feature_schema_sha256",
+    )
+    source_sha = _valid_sha256(
+        manifest.get("source_evidence_sha256"),
+        field="source_evidence_sha256",
+    )
+    if sha256_file(model_path) != model_sha:
+        raise HTTPException(status_code=503, detail="Strict model SHA-256 does not match release manifest")
+    if sha256_file(priors_path) != priors_sha:
+        raise HTTPException(
+            status_code=503,
+            detail="Strategy-prior SHA-256 does not match release manifest",
+        )
+
+    calibration_sessions = manifest.get("calibration_sessions")
+    sealed_test_session = manifest.get("sealed_test_session")
+    if (
+        not isinstance(calibration_sessions, list)
+        or len(calibration_sessions) < 2
+        or any(not isinstance(item, int) or item <= 0 for item in calibration_sessions)
+        or len(set(calibration_sessions)) != len(calibration_sessions)
+        or not isinstance(sealed_test_session, int)
+        or sealed_test_session <= 0
+        or sealed_test_session in calibration_sessions
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict release calibration/test session contract is invalid",
+        )
+
+    radii = manifest.get("conformal_radii_s")
+    required_levels = ("0.50", "0.80", "0.90", "0.95")
+    if not isinstance(radii, dict) or set(radii) != set(required_levels):
+        raise HTTPException(status_code=503, detail="Strict release conformal levels are incomplete")
+    radius_values = []
+    for level in required_levels:
+        try:
+            value = float(radii[level])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="Strict release conformal radius is invalid") from exc
+        if not math.isfinite(value) or value <= 0:
+            raise HTTPException(status_code=503, detail="Strict release conformal radius is invalid")
+        radius_values.append(value)
+    if radius_values != sorted(radius_values):
+        raise HTTPException(status_code=503, detail="Strict release conformal radii are not monotonic")
+
+    if artifact is not None:
+        if artifact.get("task") != "next_lap_strict_mixture":
+            raise HTTPException(status_code=503, detail="Strict model task does not match release contract")
+        features = artifact.get("features")
+        if not isinstance(features, list) or _canonical_json_sha256(features) != feature_sha:
+            raise HTTPException(status_code=503, detail="Strict model feature schema hash mismatch")
+        if artifact.get("retrospective_stint_features_used") is not False:
+            raise HTTPException(status_code=503, detail="Strict model uses retrospective stint features")
+        if artifact.get("calibration_sessions") != calibration_sessions:
+            raise HTTPException(status_code=503, detail="Strict model calibration sessions mismatch")
+        if artifact.get("sealed_test_session") != sealed_test_session:
+            raise HTTPException(status_code=503, detail="Strict model sealed-test session mismatch")
+        artifact_radii = artifact.get("conformal_radii_s")
+        if not isinstance(artifact_radii, dict):
+            raise HTTPException(status_code=503, detail="Strict model conformal radii are missing")
+        for level, expected in zip(required_levels, radius_values, strict=True):
+            try:
+                actual = float(artifact_radii[level])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Strict model conformal radii mismatch",
+                ) from exc
+            if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12):
+                raise HTTPException(status_code=503, detail="Strict model conformal radii mismatch")
+
+    return {
+        "verified": True,
+        "production_eligible": True,
+        "git_sha": manifest.get("git_sha"),
+        "model_sha256": model_sha,
+        "strategy_priors_sha256": priors_sha,
+        "source_evidence_sha256": source_sha,
+        "calibration_sessions": calibration_sessions,
+        "sealed_test_session": sealed_test_session,
+        "conformal_radii_s": radii,
+    }
+
+
 def _age_s(raw: Any) -> float | None:
     if not raw:
         return None
@@ -226,12 +396,24 @@ def _load_artifact() -> dict[str, Any] | None:
     path = _model_path()
     if not path.exists():
         return None
-    stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    key = _strict_runtime_key()
     if _artifact_cache["key"] != key:
-        _artifact_cache["value"] = load_strict_artifact(path)
+        artifact = load_strict_artifact(path)
+        release = _verify_strict_release(artifact)
+        _artifact_cache["value"] = artifact
+        _artifact_cache["release"] = release
         _artifact_cache["key"] = key
     return _artifact_cache["value"]
+
+
+def _strict_release_metadata() -> dict[str, Any]:
+    artifact = _load_artifact()
+    if artifact is None:
+        raise HTTPException(status_code=503, detail="Strict live pace model is unavailable")
+    release = _artifact_cache.get("release")
+    if not isinstance(release, dict):
+        raise HTTPException(status_code=503, detail="Strict release verification is unavailable")
+    return release
 
 
 def _simulation_config(samples: int) -> tuple[SimulationConfig, dict[str, Any]]:
