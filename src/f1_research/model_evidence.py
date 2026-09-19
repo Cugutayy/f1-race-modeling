@@ -9,6 +9,7 @@ reported as unavailable rather than inferred.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,16 @@ def _paired_uncertainty(uncertainty: dict[str, Any] | None) -> dict[str, Any] | 
     }
 
 
+def _provenance_digest(provenance: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        provenance,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def build_model_evidence(
     report: dict[str, Any],
     selection: dict[str, Any],
@@ -139,6 +150,7 @@ def build_model_evidence(
 
     provenance = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
     years = provenance.get("years") if isinstance(provenance.get("years"), list) else None
+    requests = provenance.get("requests") if isinstance(provenance.get("requests"), list) else None
     selected_modern = selection.get("selected_modern")
     if not isinstance(selected_modern, dict):
         selected_modern = None
@@ -152,6 +164,14 @@ def build_model_evidence(
         "benchmark_run_id": report.get("run_id"),
         "provider": provenance.get("provider"),
         "years": years,
+        "source_provenance_sha256": _provenance_digest(provenance),
+        "source_request_count": len(requests) if requests is not None else None,
+        "source_csv_sha256": provenance.get("source_csv_sha256"),
+        "provenance_sidecar_sha256": provenance.get("provenance_sidecar_sha256"),
+        "publication_timestamps_available": provenance.get(
+            "publication_timestamps_available"
+        ),
+        "qualifying_time_basis": provenance.get("qualifying_time_basis"),
         "protocol": selection.get("protocol"),
         "sealed_test_events": len(split["test"]),
         "sealed_test_event_ids": split["test"],
