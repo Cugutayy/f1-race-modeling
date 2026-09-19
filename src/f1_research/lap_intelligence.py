@@ -209,11 +209,11 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
             start = lap.start
             if pd.isna(start):
                 continue
-            rain_state = rain_state(lap.get("rainfall"))
+            current_rain = rain_state(lap.get("rainfall"))
             usable = [
                 (available, duration, previous_rain, previous_lap)
                 for available, duration, previous_rain, previous_lap in completed
-                if available <= start and same_rain_regime(previous_rain, rain_state)
+                if available <= start and same_rain_regime(previous_rain, current_rain)
             ]
             values = np.asarray([duration for _, duration, _, _ in usable[-5:]], dtype=float)
             if len(values) >= minimum_history:
@@ -272,7 +272,7 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
                 duration
                 for available, duration, previous_rain, _ in completed
                 if available <= lap.target_available_at
-                and same_rain_regime(previous_rain, rain_state)
+                and same_rain_regime(previous_rain, current_rain)
             ]
             duration = float(lap.target_s)
             if (
@@ -284,7 +284,7 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
                 completed.append((
                     lap.target_available_at,
                     duration,
-                    rain_state,
+                    current_rain,
                     int(lap.lap_number),
                 ))
     result = pd.DataFrame(rows)
