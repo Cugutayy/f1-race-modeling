@@ -27,7 +27,19 @@ def _report():
                 "podium_recall": 0.58,
             },
         ],
-        "provenance": {"provider": "Jolpica", "years": [2022, 2023, 2024, 2025, 2026]},
+        "provenance": {
+            "provider": "Jolpica",
+            "years": [2022, 2023, 2024, 2025, 2026],
+            "qualifying_time_basis": "Q1",
+            "publication_timestamps_available": False,
+            "source_csv_sha256": "c" * 64,
+            "provenance_sidecar_sha256": "d" * 64,
+            "requests": [{
+                "url": "https://api.jolpi.ca/ergast/f1/2026/results/",
+                "retrieved_at": "2026-09-19T00:00:00+00:00",
+                "sha256": "e" * 64,
+            }],
+        },
     }
 
 
@@ -77,6 +89,13 @@ def test_build_model_evidence_keeps_sealed_metrics_selection_and_uncertainty():
     payload = build_model_evidence(_report(), _selection(), _uncertainty())
     assert payload["sealed_test_events"] == 2
     assert payload["provider"] == "Jolpica"
+    assert payload["years"] == [2022, 2023, 2024, 2025, 2026]
+    assert payload["source_request_count"] == 1
+    assert payload["source_csv_sha256"] == "c" * 64
+    assert payload["provenance_sidecar_sha256"] == "d" * 64
+    assert payload["publication_timestamps_available"] is False
+    assert payload["qualifying_time_basis"] == "Q1"
+    assert len(payload["source_provenance_sha256"]) == 64
     assert payload["selected_modern"]["name"] == "catboost"
     assert payload["ensemble_weights"] == {"modern": 0.75, "qualifying": 0.25, "pl": 0.0}
     models = {row["model"]: row for row in payload["models"]}
