@@ -1,5 +1,6 @@
 from f1_research.prediction_engine_v2 import assess_quality, prediction_envelope
 
+
 def test_prediction_envelope_fuses_pace_and_race_without_inventing_values():
     state={"session_key":1,"current_lap":20,"updated_at":"2026-01-01T00:00:00Z","state_age_s":2.0,
            "drivers":[{"driver_number":1,"acronym":"AAA","position":1,"last_lap_s":90.0}]}
