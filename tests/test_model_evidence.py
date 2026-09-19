@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -52,6 +53,19 @@ def _selection():
     }
 
 
+def _model_release():
+    return {
+        "git_sha": "a" * 40,
+        "model_id": "modern::catboost",
+        "model_sha256": "b" * 64,
+        "model_manifest_sha256": "c" * 64,
+        "feature_schema_sha256": "d" * 64,
+        "training_data_sha256": "e" * 64,
+        "calibration_sha256": "f" * 64,
+        "trained_until": "2026-01-01T00:00:00+00:00",
+    }
+
+
 def _uncertainty():
     return {
         "baseline": "qualifying_order",
@@ -86,8 +100,14 @@ def _uncertainty():
 
 
 def test_build_model_evidence_keeps_sealed_metrics_selection_and_uncertainty():
-    payload = build_model_evidence(_report(), _selection(), _uncertainty())
+    payload = build_model_evidence(
+        _report(),
+        _selection(),
+        _uncertainty(),
+        model_release=_model_release(),
+    )
     assert payload["sealed_test_events"] == 2
+    assert payload["model_release"] == _model_release()
     assert payload["provider"] == "Jolpica"
     assert payload["years"] == [2022, 2023, 2024, 2025, 2026]
     assert payload["source_request_count"] == 1
@@ -104,19 +124,68 @@ def test_build_model_evidence_keeps_sealed_metrics_selection_and_uncertainty():
     assert paired["interval_95"] == pytest.approx([-0.59, 0.11])
 
 
-def test_generator_does_not_invent_missing_uncertainty(tmp_path):
-    benchmark = tmp_path / "benchmark"
-    benchmark.mkdir()
+def test_generator_does_not_invent_missing_uncertainty_and_binds_model_bytes(tmp_path):
+    release = tmp_path / "release"
+    benchmark = release / "benchmark"
+    benchmark.mkdir(parents=True)
     (benchmark / "report.json").write_text(json.dumps(_report()), encoding="utf-8")
     (benchmark / "selection.json").write_text(json.dumps(_selection()), encoding="utf-8")
+    model = release / "model.joblib"
+    model.write_bytes(b"sealed-model")
+    manifest = {
+        "schema_version": 1,
+        "model_id": "modern::catboost",
+        "model_sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+        "feature_schema_sha256": "d" * 64,
+        "training_data_sha256": "e" * 64,
+        "calibration_sha256": "f" * 64,
+        "trained_until": "2026-01-01T00:00:00+00:00",
+        "benchmark_run_id": "abc123",
+        "git_sha": "a" * 40,
+    }
+    manifest_path = release / "model_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
     output = tmp_path / "model_evidence.json"
     payload = generate_model_evidence(benchmark, output)
     assert payload["uncertainty"] is None
+    assert payload["model_release"]["git_sha"] == "a" * 40
+    assert payload["model_release"]["model_sha256"] == manifest["model_sha256"]
+    assert payload["model_release"]["model_manifest_sha256"] == hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
     assert json.loads(output.read_text(encoding="utf-8"))["benchmark_run_id"] == "abc123"
+
+
+def test_generator_rejects_model_bytes_that_do_not_match_manifest(tmp_path):
+    release = tmp_path / "release"
+    benchmark = release / "benchmark"
+    benchmark.mkdir(parents=True)
+    (benchmark / "report.json").write_text(json.dumps(_report()), encoding="utf-8")
+    (benchmark / "selection.json").write_text(json.dumps(_selection()), encoding="utf-8")
+    (release / "model.joblib").write_bytes(b"tampered-model")
+    (release / "model_manifest.json").write_text(json.dumps({
+        "schema_version": 1,
+        "model_id": "modern::catboost",
+        "model_sha256": "1" * 64,
+        "feature_schema_sha256": "d" * 64,
+        "training_data_sha256": "e" * 64,
+        "calibration_sha256": "f" * 64,
+        "trained_until": "2026-01-01T00:00:00+00:00",
+        "benchmark_run_id": "abc123",
+        "git_sha": "a" * 40,
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="Model bytes"):
+        generate_model_evidence(benchmark, tmp_path / "evidence.json")
 
 
 def test_evidence_requires_explicit_sealed_test_split():
     selection = _selection()
     selection["split"] = {"fit": ["A"]}
     with pytest.raises(ValueError, match="sealed test"):
-        build_model_evidence(_report(), selection, None)
+        build_model_evidence(
+            _report(),
+            selection,
+            None,
+            model_release=_model_release(),
+        )
