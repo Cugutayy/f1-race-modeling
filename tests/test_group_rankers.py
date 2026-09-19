@@ -19,7 +19,7 @@ def test_group_arrays_preserve_whole_events_and_higher_relevance_for_better_fini
 
 def test_group_arrays_reject_incomplete_classification():
     frame = build_features(synthetic_history(events=2, drivers=5))
-    broken = frame[~((frame.event_id == frame.event_id.iloc[0]) & (frame.finish_position == 5))].copy()
+    broken = frame[~((frame.event_id == frame.event_id.iloc[0]) & (frame.finish_position == 3))].copy()
     with pytest.raises(ValueError, match="consecutive"):
         group_arrays(broken)
 
