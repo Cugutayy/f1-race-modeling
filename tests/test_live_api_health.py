@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -25,18 +26,123 @@ def test_readyz_requires_installed_production_artifacts(monkeypatch, tmp_path):
 
 def test_modelz_exposes_sealed_evidence(monkeypatch):
     monkeypatch.delenv("F1_API_TOKEN", raising=False)
-    monkeypatch.setattr(live_api, "_load_artifact", lambda: {"schema_version": 7})
+    monkeypatch.setattr(
+        live_api,
+        "_load_artifact",
+        lambda: {"schema_version": 7, "selected_regressor": "extra_trees"},
+    )
+    monkeypatch.setattr(
+        live_api,
+        "_strict_release_metadata",
+        lambda: {
+            "verified": True,
+            "production_eligible": True,
+            "git_sha": "a" * 40,
+            "source_evidence_sha256": "b" * 64,
+        },
+    )
     monkeypatch.setattr(live_api, "_read_model_evidence", lambda: {
         "evidence_kind": "retrospective_sealed_historical_benchmark",
         "sealed_test_events": 12,
         "benchmark_run_id": "sealed-abc",
+        "source_provenance_sha256": "c" * 64,
     })
     response = live_api.modelz(None)
     assert response.status_code == 200
     payload = json.loads(response.body)
     assert payload["live_pace_model"]["artifact_schema_version"] == 7
+    assert payload["live_pace_model"]["selected_regressor"] == "extra_trees"
+    assert payload["live_pace_model"]["release"]["verified"] is True
     assert payload["race_outcome_model_evidence"]["sealed_test_events"] == 12
     assert payload["race_outcome_model_evidence"]["benchmark_run_id"] == "sealed-abc"
+    assert payload["race_outcome_model_evidence"]["source_provenance_sha256"] == "c" * 64
+
+
+def _strict_release_fixture(monkeypatch, tmp_path):
+    model = tmp_path / "next_lap_strict.joblib"
+    priors = tmp_path / "strategy_priors.json"
+    release = tmp_path / "strict_release_manifest.json"
+    model.write_bytes(b"strict-model-bytes")
+    priors.write_bytes(b'{"schema_version":1,"priors":{"pit_loss":20.0}}')
+    artifact = {
+        "schema_version": 3,
+        "task": "next_lap_strict_mixture",
+        "features": ["lap_number", "driver_number"],
+        "selected_regressor": "extra_trees",
+        "calibration_sessions": [1001, 1002, 1003],
+        "sealed_test_session": 1004,
+        "conformal_radii_s": {
+            "0.50": 0.5,
+            "0.80": 0.8,
+            "0.90": 1.0,
+            "0.95": 1.2,
+        },
+        "retrospective_stint_features_used": False,
+    }
+    payload = {
+        "schema_version": 1,
+        "evidence_kind": "strict_live_pace_release",
+        "git_sha": "a" * 40,
+        "feature_policy": "strict_asof_only",
+        "feature_schema_sha256": live_api.sha256_json(artifact["features"]),
+        "model_sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+        "strategy_priors_sha256": hashlib.sha256(priors.read_bytes()).hexdigest(),
+        "source_evidence_sha256": "b" * 64,
+        "calibration_sessions": artifact["calibration_sessions"],
+        "sealed_test_session": artifact["sealed_test_session"],
+        "conformal_radii_s": artifact["conformal_radii_s"],
+        "retrospective_stint_features_used": False,
+    }
+    release.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(live_api, "_model_path", lambda: model)
+    monkeypatch.setattr(live_api, "_priors_path", lambda: priors)
+    monkeypatch.setattr(live_api, "_strict_release_manifest_path", lambda: release)
+    monkeypatch.setattr(live_api, "load_strict_artifact", lambda path: artifact)
+    monkeypatch.delenv("F1_ALLOW_UNVERIFIED_STRICT_MODEL", raising=False)
+    live_api._artifact_cache.update({"key": None, "value": None, "release": None})
+    return model, priors, release, artifact
+
+
+def test_strict_runtime_rejects_missing_release_manifest(monkeypatch, tmp_path):
+    model, priors, release, _ = _strict_release_fixture(monkeypatch, tmp_path)
+    release.unlink()
+    with pytest.raises(live_api.HTTPException) as exc:
+        live_api._load_artifact()
+    assert exc.value.status_code == 503
+    assert "release manifest" in str(exc.value.detail).lower()
+    assert model.exists() and priors.exists()
+
+
+def test_strict_runtime_verifies_hashes_and_invalidates_cache(monkeypatch, tmp_path):
+    _, priors, _, artifact = _strict_release_fixture(monkeypatch, tmp_path)
+    loaded = live_api._load_artifact()
+    assert loaded is artifact
+    release = live_api._strict_release_metadata()
+    assert release["verified"] is True
+    assert release["production_eligible"] is True
+    assert release["calibration_sessions"] == [1001, 1002, 1003]
+
+    priors.write_bytes(b'{"schema_version":1,"priors":{"pit_loss":21.0},"changed":true}')
+    with pytest.raises(live_api.HTTPException) as exc:
+        live_api._load_artifact()
+    assert exc.value.status_code == 503
+    assert "strategy-prior sha-256" in str(exc.value.detail).lower()
+
+
+def test_strict_runtime_override_is_explicitly_non_production(monkeypatch, tmp_path):
+    model = tmp_path / "next_lap_strict.joblib"
+    model.write_bytes(b"model")
+    artifact = {"schema_version": 3}
+    monkeypatch.setattr(live_api, "_model_path", lambda: model)
+    monkeypatch.setattr(live_api, "load_strict_artifact", lambda path: artifact)
+    monkeypatch.setenv("F1_ALLOW_UNVERIFIED_STRICT_MODEL", "1")
+    live_api._artifact_cache.update({"key": None, "value": None, "release": None})
+
+    assert live_api._load_artifact() is artifact
+    release = live_api._strict_release_metadata()
+    assert release["verified"] is False
+    assert release["production_eligible"] is False
+    assert release["override"] == "F1_ALLOW_UNVERIFIED_STRICT_MODEL"
 
 
 def test_strict_live_prediction_is_written_to_immutable_ledger(monkeypatch, tmp_path):
