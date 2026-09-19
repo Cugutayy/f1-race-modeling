@@ -73,17 +73,37 @@ jobs:
           release = json.loads(release_path.read_text())
           priors = json.loads(priors_path.read_text())
 
+          assert artifact["schema_version"] == 4
           assert artifact["task"] == "next_lap_strict_mixture"
           assert artifact["features"] == STRICT_FEATURES
+          assert artifact["pace_prediction_mode"] in {
+              "recent_median_5_baseline",
+              "recent_median_5_residual",
+          }
+          assert isinstance(artifact["baseline_guard"], dict)
+          assert artifact["baseline_guard"]["tuning_selected_mae_s"] <= (
+              artifact["baseline_guard"]["tuning_baseline_mae_s"] * 0.99 + 1e-12
+              if artifact["baseline_guard"]["challenger_selected"]
+              else artifact["baseline_guard"]["tuning_baseline_mae_s"] + 1e-12
+          )
           assert artifact["retrospective_stint_features_used"] is False
+          assert report["schema_version"] == 4
+          assert report["artifact_schema_version"] == 4
           assert report["task"] == "next_lap_strict_mixture"
           assert report["feature_policy"] == "strict_asof_only"
+          assert report["validation_scope"] == "retrospective_historical_posthoc_diagnostic"
+          assert report["prospective_validation"] is False
           assert report["features"] == STRICT_FEATURES
           assert report["audit"]["test_updates_model"] is False
           assert len(report["sessions"]) >= 6
 
           assert release["schema_version"] == 1
           assert release["evidence_kind"] == "strict_live_pace_release"
+          assert release["artifact_schema_version"] == 4
+          assert release["pace_prediction_mode"] == artifact["pace_prediction_mode"]
+          assert release["baseline_guard"] == artifact["baseline_guard"]
+          assert release["validation_scope"] == "retrospective_historical_posthoc_diagnostic"
+          assert release["prospective_validation"] is False
           assert release["git_sha"] == os.environ["GITHUB_SHA"].lower()
           assert release["feature_policy"] == "strict_asof_only"
           assert release["feature_schema_sha256"] == _canonical_sha256(STRICT_FEATURES)
@@ -140,6 +160,8 @@ jobs:
               "git_sha": release["git_sha"],
               "sessions": release["sessions"],
               "selected_regressor": release["selected_regressor"],
+              "pace_prediction_mode": release["pace_prediction_mode"],
+              "challenger_selected": release["baseline_guard"]["challenger_selected"],
               "sealed_test_session": release["sealed_test_session"],
               "calibration_sessions": release["calibration_sessions"],
               "model_sha256": release["model_sha256"],
