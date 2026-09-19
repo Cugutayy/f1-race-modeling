@@ -565,12 +565,18 @@ def modelz(_: None = Depends(_authorize)) -> JSONResponse:
     }))
 
 
+def _websocket_auth_close_code(authorization: str | None) -> int | None:
+    expected = os.environ.get("F1_API_TOKEN")
+    if not expected:
+        return None if _env_flag("F1_ALLOW_UNAUTHENTICATED_API", default=False) else 1013
+    return None if authorization == f"Bearer {expected}" else 4401
+
+
 @app.websocket("/v1/ws")
 async def live_socket(websocket: WebSocket) -> None:
-    expected = os.environ.get("F1_API_TOKEN")
-    supplied = websocket.headers.get("authorization")
-    if expected and supplied != f"Bearer {expected}":
-        await websocket.close(code=4401)
+    close_code = _websocket_auth_close_code(websocket.headers.get("authorization"))
+    if close_code is not None:
+        await websocket.close(code=close_code)
         return
     await websocket.accept()
     sequence = 0

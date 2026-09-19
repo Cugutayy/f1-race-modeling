@@ -11,7 +11,8 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY reports/local/model_evidence.json /models/model_evidence.json
 
-RUN python -m pip install --no-cache-dir --upgrade pip \
+RUN python -c "import json,pathlib; p=pathlib.Path('/models/model_evidence.json'); d=json.loads(p.read_text()); assert d.get('schema_version') == 1; assert d.get('evidence_kind') == 'retrospective_sealed_historical_benchmark'; assert isinstance(d.get('sealed_test_events'), int) and d['sealed_test_events'] > 0" \
+    && python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir ".[live,api]" \
     && useradd --create-home --uid 10001 f1 \
     && mkdir -p /data/live /models \

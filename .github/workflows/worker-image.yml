@@ -6,6 +6,7 @@ on:
       - 'Dockerfile.worker'
       - 'compose.live.yaml'
       - '.dockerignore'
+      - 'reports/local/model_evidence.json'
       - 'pyproject.toml'
       - 'src/**'
       - '.github/workflows/worker-image.yml'
@@ -16,6 +17,7 @@ on:
       - 'Dockerfile.worker'
       - 'compose.live.yaml'
       - '.dockerignore'
+      - 'reports/local/model_evidence.json'
       - 'pyproject.toml'
       - 'src/**'
       - '.github/workflows/worker-image.yml'
@@ -37,10 +39,28 @@ jobs:
         env:
           OPENF1_TOKEN: ci-placeholder
           F1_API_TOKEN: ci-placeholder
-        run: docker compose -f compose.live.yaml config --quiet
+        run: |
+          docker compose -f compose.live.yaml config --quiet
+          docker compose -f compose.live.yaml config --format json > /tmp/compose.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path("/tmp/compose.json").read_text())
+          volumes = config["services"]["api"].get("volumes", [])
+          targets = {
+              volume.get("target")
+              for volume in volumes
+              if isinstance(volume, dict)
+          }
+          assert "/models" not in targets, "compose must not shadow bundled /models evidence"
+          assert "/models/lap-strict" in targets, "strict model mount must use /models/lap-strict"
+          PY
       - name: Build persistent worker image
         run: docker build -f Dockerfile.worker -t f1-race-worker:ci .
-      - name: Smoke-test installed entrypoints
+      - name: Smoke-test installed entrypoints and bundled evidence
         run: |
           docker run --rm --entrypoint sh f1-race-worker:ci -c \
-            'command -v f1-api && command -v f1-live && command -v f1-openf1-doctor'
+            'command -v f1-api && command -v f1-live && command -v f1-openf1-doctor && test -s /models/model_evidence.json'
+          docker run --rm --entrypoint python f1-race-worker:ci -c \
+            "import json,pathlib; d=json.loads(pathlib.Path('/models/model_evidence.json').read_text()); assert d['schema_version'] == 1; assert d['evidence_kind'] == 'retrospective_sealed_historical_benchmark'; assert d['sealed_test_events'] > 0"

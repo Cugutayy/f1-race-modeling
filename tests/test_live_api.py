@@ -128,6 +128,20 @@ def test_gateway_authorization_fails_closed_unless_explicitly_overridden(monkeyp
     assert live_api._authorize("Bearer secret-token") is None
 
 
+def test_websocket_authorization_matches_fail_closed_http_policy(monkeypatch):
+    monkeypatch.delenv("F1_API_TOKEN", raising=False)
+    monkeypatch.delenv("F1_ALLOW_UNAUTHENTICATED_API", raising=False)
+    assert live_api._websocket_auth_close_code(None) == 1013
+
+    monkeypatch.setenv("F1_ALLOW_UNAUTHENTICATED_API", "1")
+    assert live_api._websocket_auth_close_code(None) is None
+
+    monkeypatch.setenv("F1_API_TOKEN", "secret-token")
+    assert live_api._websocket_auth_close_code(None) == 4401
+    assert live_api._websocket_auth_close_code("Bearer wrong-token") == 4401
+    assert live_api._websocket_auth_close_code("Bearer secret-token") is None
+
+
 def test_live_report_has_coherent_fallback_probabilities_only_with_research_overrides(
     gateway_files, monkeypatch
 ):
