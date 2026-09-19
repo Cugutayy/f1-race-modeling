@@ -104,7 +104,7 @@ def _live_state():
 
 
 def test_strict_artifact_excludes_retrospective_stint_features_and_has_baselines():
-    datasets = [_dataset(501 + index, index * 7) for index in range(4)]
+    datasets = [_dataset(501 + index, index * 7) for index in range(6)]
     artifact, metrics, audit = fit_strict_mixture(datasets, specs=_specs())
     assert artifact["task"] == "next_lap_strict_mixture"
     assert artifact["retrospective_stint_features_used"] is False
@@ -115,11 +115,21 @@ def test_strict_artifact_excludes_retrospective_stint_features_and_has_baselines
     assert np.isfinite(row.green_mae_s)
     assert np.isfinite(row.recent_median_mae_s)
     assert np.isfinite(row.last_lap_mae_s)
+    assert row.calibration_events == 3
     assert 0 <= row.interval_coverage <= 1
+    for column in ("coverage_50", "coverage_80", "coverage_90", "coverage_95"):
+        assert 0 <= row[column] <= 1
+    assert row.interval_width_50_s <= row.interval_width_80_s
+    assert row.interval_width_80_s <= row.interval_width_90_s
+    assert row.interval_width_90_s <= row.interval_width_95_s
+    assert len(artifact["calibration_sessions"]) == 3
+    assert set(artifact["conformal_radii_s"]) == {"0.50", "0.80", "0.90", "0.95"}
+    assert audit["calibration_sessions"] == artifact["calibration_sessions"]
+    assert set(audit["sealed_test_coverage"]) == {"0.50", "0.80", "0.90", "0.95"}
 
 
 def test_mutating_retrospective_stint_columns_cannot_change_strict_benchmark():
-    datasets = [_dataset(601 + index, index * 7) for index in range(4)]
+    datasets = [_dataset(601 + index, index * 7) for index in range(6)]
     _, original, original_audit = fit_strict_mixture(datasets, specs=_specs())
     changed = [frame.copy() for frame in datasets]
     for frame in changed:
@@ -132,8 +142,20 @@ def test_mutating_retrospective_stint_columns_cannot_change_strict_benchmark():
     assert original_audit["baseline_comparison"] == mutated_audit["baseline_comparison"]
 
 
+def test_mutating_sealed_test_targets_cannot_change_selection_or_conformal_calibration():
+    datasets = [_dataset(651 + index, index * 7) for index in range(6)]
+    artifact, _, audit = fit_strict_mixture(datasets, specs=_specs())
+    changed = [frame.copy() for frame in datasets]
+    changed[-1]["target_s"] = changed[-1]["target_s"] + 25.0
+    changed_artifact, _, changed_audit = fit_strict_mixture(changed, specs=_specs())
+    assert artifact["selected_regressor"] == changed_artifact["selected_regressor"]
+    assert artifact["conformal_radii_s"] == changed_artifact["conformal_radii_s"]
+    assert artifact["calibration_sessions"] == changed_artifact["calibration_sessions"]
+    assert audit["regressor_trials"] == changed_audit["regressor_trials"]
+
+
 def test_strict_live_probabilities_are_coherent():
-    datasets = [_dataset(701 + index, index * 7) for index in range(4)]
+    datasets = [_dataset(701 + index, index * 7) for index in range(6)]
     artifact, _, _ = fit_strict_mixture(datasets, specs=_specs())
     predicted = predict_live_strict(artifact, _live_state())
     assert len(predicted) == 3
@@ -148,7 +170,7 @@ def test_strict_live_probabilities_are_coherent():
 
 
 def test_strict_pace_drives_race_simulation_and_is_exposed_in_audit():
-    datasets = [_dataset(801 + index, index * 7) for index in range(4)]
+    datasets = [_dataset(801 + index, index * 7) for index in range(6)]
     artifact, _, _ = fit_strict_mixture(datasets, specs=_specs())
     config = SimulationConfig(
         samples=1000,
