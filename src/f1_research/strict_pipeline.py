@@ -36,8 +36,11 @@ def run(
     include_foundation: bool = False,
     refresh: bool = False,
 ) -> dict[str, Any]:
-    if count < 4:
-        raise ValueError("At least four completed races are required")
+    if count < 6:
+        raise ValueError(
+            "At least six completed races are required: fit, tuning, "
+            "three-event conformal calibration and sealed test"
+        )
     output = Path(output)
     datasets, manifests = collect_recent(
         year,
