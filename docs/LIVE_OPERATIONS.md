@@ -209,6 +209,7 @@ export F1_LIVE_EVENTS_PATH="$PWD/reports/local/live/events.jsonl"
 export F1_LIVE_MANIFEST_PATH="$PWD/reports/local/live/manifest.json"
 export F1_STRICT_MODEL_PATH="$PWD/reports/local/lap-strict/next_lap_strict.joblib"
 export F1_STRATEGY_PRIORS_PATH="$PWD/reports/local/lap-strict/strategy_priors.json"
+export F1_STRICT_RELEASE_MANIFEST_PATH="$PWD/reports/local/lap-strict/strict_release_manifest.json"
 export F1_MODEL_EVIDENCE_PATH="$PWD/reports/local/model_evidence.json"
 
 f1-api
@@ -227,6 +228,13 @@ GET /v1/strategy?driver_number=1&total_laps=57&samples=4000
 `/v1/evidence` serves only a validated schema-v1 compact sealed-benchmark artifact. A
 missing artifact returns 404; malformed or unsupported evidence returns 503 rather than
 being shown as valid model proof.
+
+The API also verifies the strict live release contract before the model is used. By default,
+`next_lap_strict.joblib` and `strategy_priors.json` must match the SHA-256 values in
+`strict_release_manifest.json`; the feature schema, calibration/test split and
+50/80/90/95 conformal radii must match the loaded model. The only bypass is the explicit
+research override `F1_ALLOW_UNVERIFIED_STRICT_MODEL=1`, which is reported as
+`production_eligible=false`.
 
 `/healthz` separates provider transport health from canonical-state freshness. Watch:
 
