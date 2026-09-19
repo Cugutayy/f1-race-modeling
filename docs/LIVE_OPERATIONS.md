@@ -72,6 +72,15 @@ for retrospective traffic calibration. Compound/stint fields remain excluded fro
 strict evidence-bearing next-lap model because historical stint publication time is
 not available.
 
+Raw completed laps and model pace history are deliberately different objects. Raw laps
+remain unchanged in source snapshots and capture/replay evidence. The strict pace
+buffer excludes known pit/pit-out and active neutralization laps, resets across a
+known rainfall-state transition, and rejects only extreme *slow* restart/neutralization
+outliers relative to already-observed clean pace. The same policy is used by historical
+feature construction and the live `RaceStateStore`; new live snapshots expose the
+filtered values separately as `pace_laps_s`. If a pit event arrives after its lap row,
+that lap is removed from the model pace buffer without deleting provider truth.
+
 ```bash
 f1-laps-strict \
   --year 2026 \
