@@ -1,3 +1,3 @@
-production-v2
+production-v3
 purpose=same-revision-data-replay-model-evidence
-reason=provider-capability-gap-semantics
+reason=complete-hard-field-provider-event-set
