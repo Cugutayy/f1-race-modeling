@@ -1,9 +1,35 @@
 {
   "schema_version": 1,
   "evidence_kind": "retrospective_sealed_historical_benchmark",
-  "benchmark_run_id": "bfb27a2c32a1d39c",
-  "provider": "user-supplied; verify source manifest",
-  "years": null,
+  "benchmark_run_id": "1c7f8d0bde638f06",
+  "model_release": {
+    "git_sha": "0c6b7649884fb62b752e3a212794b052ee81def0",
+    "model_id": "modern::catboost",
+    "model_sha256": "ae07d376770044ddf259d506fcd7d990f789a384c1331685fb04d5c4ec3d20a8",
+    "model_manifest_sha256": "af9afebaee02add1bc0f1b8bb22d1835d4525730bbe4191a9dbd39171d035e90",
+    "feature_schema_sha256": "b1c6a4ebd2085c82c8e8b012a65b282dc748abe3269162ea21c9cc8f6e7b0ebd",
+    "training_data_sha256": "e6a38240da4f805f8ebf6d5af6a5f0bdaec14dcd5ca71af18bc893a241fec8e0",
+    "calibration_sha256": "713a11ad5ffa9f7e7ffdcee0a804b3e0e2095d8bc51c20a58e093cd06208e49e",
+    "trained_until": "2025-10-26T00:00:00+00:00"
+  },
+  "provider": "Jolpica",
+  "years": [
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025,
+    2026
+  ],
+  "source_provenance_sha256": "a2a072758f1cd579c8753bb3c0955399226fda2853b8dd76e13ba6ba8b533ed7",
+  "source_request_count": 86,
+  "source_csv_sha256": "930babb19cc1a72e0b2a805e43e774b4e29989f09b20f68bab554933b85ea522",
+  "provenance_sidecar_sha256": "f16b96690bd43d2c82c94c3fba57b974aa62740a3f1965c2389c3e668f7a33ac",
+  "publication_timestamps_available": false,
+  "qualifying_time_basis": "Q1",
   "protocol": "disjoint chronological fit -> tuning -> calibration -> sealed test",
   "sealed_test_events": 12,
   "sealed_test_event_ids": [
@@ -65,25 +91,25 @@
           "bin": 5,
           "count": 3,
           "mean_probability": 0.5671314772906696,
-          "observed_rate": 0.0
+          "observed_rate": 0
         },
         {
           "bin": 6,
           "count": 1,
           "mean_probability": 0.6668416228402848,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 7,
           "count": 1,
           "mean_probability": 0.7675564477692289,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 8,
           "count": 1,
           "mean_probability": 0.8990211991231827,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 9,
@@ -113,13 +139,13 @@
           "bin": 4,
           "count": 1,
           "mean_probability": 0.4172197800165219,
-          "observed_rate": 0.0
+          "observed_rate": 0
         },
         {
           "bin": 5,
           "count": 1,
           "mean_probability": 0.5827802199763226,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 7,
@@ -173,7 +199,7 @@
           "bin": 1,
           "count": 4,
           "mean_probability": 0.10500348458902142,
-          "observed_rate": 0.0
+          "observed_rate": 0
         },
         {
           "bin": 2,
@@ -197,7 +223,7 @@
           "bin": 8,
           "count": 4,
           "mean_probability": 0.8789045276797041,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 9,
@@ -233,31 +259,31 @@
           "bin": 3,
           "count": 5,
           "mean_probability": 0.37155917366276375,
-          "observed_rate": 0.0
+          "observed_rate": 0
         },
         {
           "bin": 4,
           "count": 3,
           "mean_probability": 0.4502457871599506,
-          "observed_rate": 0.0
+          "observed_rate": 0
         },
         {
           "bin": 5,
           "count": 1,
           "mean_probability": 0.5676804611453867,
-          "observed_rate": 0.0
+          "observed_rate": 0
         },
         {
           "bin": 6,
           "count": 1,
           "mean_probability": 0.6554877482819478,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 7,
           "count": 1,
           "mean_probability": 0.7415564636844053,
-          "observed_rate": 0.0
+          "observed_rate": 0
         }
       ]
     },
@@ -281,13 +307,13 @@
           "bin": 2,
           "count": 2,
           "mean_probability": 0.25529174643474895,
-          "observed_rate": 0.0
+          "observed_rate": 0
         },
         {
           "bin": 3,
           "count": 1,
           "mean_probability": 0.3280135726695191,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 4,
@@ -299,7 +325,7 @@
           "bin": 5,
           "count": 2,
           "mean_probability": 0.5116891498909553,
-          "observed_rate": 1.0
+          "observed_rate": 1
         },
         {
           "bin": 6,
@@ -317,7 +343,7 @@
           "bin": 9,
           "count": 1,
           "mean_probability": 0.9425276236645161,
-          "observed_rate": 1.0
+          "observed_rate": 1
         }
       ]
     }
@@ -490,7 +516,7 @@
           "model_better_events": 0,
           "baseline_better_events": 12,
           "ties": 0,
-          "bootstrap_fraction_favorable": 0.0,
+          "bootstrap_fraction_favorable": 0,
           "direction": "lower"
         },
         "winner_log_loss": {
