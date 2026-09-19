@@ -5,7 +5,10 @@ __pycache__
 *.pyc
 .pytest_cache
 .ruff_cache
-reports
+reports/*
+!reports/local/
+reports/local/*
+!reports/local/model_evidence.json
 data
 web/node_modules
 web/.next
