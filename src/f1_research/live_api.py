@@ -246,6 +246,16 @@ def _verify_strict_release(artifact: dict[str, Any] | None = None) -> dict[str, 
         }
 
     manifest = _read_strict_release_manifest()
+    if manifest.get("artifact_schema_version") != 4:
+        raise HTTPException(status_code=503, detail="Strict release requires artifact schema v4")
+    pace_mode = manifest.get("pace_prediction_mode")
+    if pace_mode not in {"recent_median_5_baseline", "recent_median_5_residual"}:
+        raise HTTPException(status_code=503, detail="Strict release pace prediction mode is unsupported")
+    baseline_guard = manifest.get("baseline_guard")
+    if not isinstance(baseline_guard, dict):
+        raise HTTPException(status_code=503, detail="Strict release baseline guard is missing")
+    if baseline_guard.get("challenger_selected") is not (pace_mode == "recent_median_5_residual"):
+        raise HTTPException(status_code=503, detail="Strict release baseline guard is inconsistent")
     model_path = _model_path()
     priors_path = _priors_path()
     if not model_path.exists():
@@ -307,6 +317,8 @@ def _verify_strict_release(artifact: dict[str, Any] | None = None) -> dict[str, 
         raise HTTPException(status_code=503, detail="Strict release conformal radii are not monotonic")
 
     if artifact is not None:
+        if artifact.get("schema_version") != 4:
+            raise HTTPException(status_code=503, detail="Strict model schema is not v4")
         if artifact.get("task") != "next_lap_strict_mixture":
             raise HTTPException(status_code=503, detail="Strict model task does not match release contract")
         features = artifact.get("features")
@@ -314,6 +326,16 @@ def _verify_strict_release(artifact: dict[str, Any] | None = None) -> dict[str, 
             raise HTTPException(status_code=503, detail="Strict model feature schema hash mismatch")
         if artifact.get("retrospective_stint_features_used") is not False:
             raise HTTPException(status_code=503, detail="Strict model uses retrospective stint features")
+        if artifact.get("pace_prediction_mode") != pace_mode:
+            raise HTTPException(status_code=503, detail="Strict model pace prediction mode mismatch")
+        if artifact.get("baseline_guard") != baseline_guard:
+            raise HTTPException(status_code=503, detail="Strict model baseline guard mismatch")
+        if pace_mode == "recent_median_5_baseline" and artifact.get("pace_regressor") is not None:
+            raise HTTPException(status_code=503, detail="Baseline strict model unexpectedly carries a regressor")
+        if pace_mode == "recent_median_5_residual" and not hasattr(
+            artifact.get("pace_regressor"), "predict"
+        ):
+            raise HTTPException(status_code=503, detail="Residual strict model is missing its regressor")
         if artifact.get("calibration_sessions") != calibration_sessions:
             raise HTTPException(status_code=503, detail="Strict model calibration sessions mismatch")
         if artifact.get("sealed_test_session") != sealed_test_session:
@@ -339,6 +361,11 @@ def _verify_strict_release(artifact: dict[str, Any] | None = None) -> dict[str, 
         "model_sha256": model_sha,
         "strategy_priors_sha256": priors_sha,
         "source_evidence_sha256": source_sha,
+        "artifact_schema_version": 4,
+        "pace_prediction_mode": pace_mode,
+        "baseline_guard": baseline_guard,
+        "validation_scope": manifest.get("validation_scope"),
+        "prospective_validation": manifest.get("prospective_validation"),
         "calibration_sessions": calibration_sessions,
         "sealed_test_session": sealed_test_session,
         "conformal_radii_s": radii,
