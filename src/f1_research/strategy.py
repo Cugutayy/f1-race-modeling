@@ -177,8 +177,12 @@ def drivers_from_state(
             continue
         driver_number = int(row["driver_number"])
         gap = 0.0 if position == 1 else float(row["gap_to_leader_s"])
-        laps = row.get("recent_laps_s") or []
-        fallback = row.get("last_lap_s")
+        laps = (
+            row.get("pace_laps_s")
+            if "pace_laps_s" in row
+            else row.get("recent_laps_s")
+        ) or []
+        fallback = laps[-1] if laps else row.get("last_lap_s")
         try:
             pace, uncertainty, degradation = _robust_pace(laps, fallback)
         except ValueError as exc:
