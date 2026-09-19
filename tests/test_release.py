@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 from sklearn.dummy import DummyRegressor
 
 from f1_research import release as rel
@@ -56,8 +57,26 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
          "test_updates_model": False},
     ))
     out = tmp_path / "release"
-    result = rel.build_release(frame, out, test_events=2, tuning_events=2,
-                               calibration_events=2, min_fit_events=2)
+    provenance = {
+        "provider": "Jolpica",
+        "years": [2025],
+        "qualifying_time_basis": "Q1",
+        "publication_timestamps_available": False,
+        "requests": [{
+            "url": "https://api.jolpi.ca/ergast/f1/2025/results/",
+            "retrieved_at": "2026-09-19T00:00:00+00:00",
+            "sha256": "a" * 64,
+        }],
+    }
+    result = rel.build_release(
+        frame,
+        out,
+        provenance=provenance,
+        test_events=2,
+        tuning_events=2,
+        calibration_events=2,
+        min_fit_events=2,
+    )
     manifest = load_manifest(out / "model_manifest.json", model_path=out / "model.joblib")
     assert result["model_id"] == manifest.model_id
     assert fitted_event_ids == ["E0", "E1", "E2", "E3"]
@@ -72,4 +91,37 @@ def test_release_builder_writes_verified_model_bundle(monkeypatch, tmp_path):
     assert uncertainty["unit"] == "whole race event"
     assert uncertainty["bootstrap_samples"] == 10000
     assert result["uncertainty"] == str(out / "benchmark" / "evidence" / "uncertainty.json")
-    assert json.loads((out / "benchmark" / "report.json").read_text())["test_events"] == 2
+    report = json.loads((out / "benchmark" / "report.json").read_text())
+    assert report["test_events"] == 2
+    assert report["provenance"]["provider"] == "Jolpica"
+    assert report["provenance"]["years"] == [2025]
+    assert result["source_provider"] == "Jolpica"
+    assert result["source_years"] == [2025]
+    assert len(result["source_provenance_sha256"]) == 64
+
+
+def test_release_input_provenance_fails_closed_without_sidecar(tmp_path):
+    source = tmp_path / "history.csv"
+    source.write_text("event_id\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="source provenance sidecar"):
+        rel._input_provenance(source)
+
+
+def test_release_input_provenance_binds_csv_and_sidecar_hashes(tmp_path):
+    source = tmp_path / "history.csv"
+    source.write_text("event_id\nE1\n", encoding="utf-8")
+    sidecar = source.with_suffix(".provenance.json")
+    sidecar.write_text(json.dumps({
+        "provider": "Jolpica",
+        "years": [2025],
+        "requests": [{
+            "url": "https://api.jolpi.ca/ergast/f1/2025/results/",
+            "retrieved_at": "2026-09-19T00:00:00+00:00",
+            "sha256": "b" * 64,
+        }],
+    }), encoding="utf-8")
+    provenance = rel._input_provenance(source)
+    assert provenance["provider"] == "Jolpica"
+    assert provenance["source_csv_name"] == "history.csv"
+    assert provenance["source_csv_sha256"] == sha256_file(source)
+    assert provenance["provenance_sidecar_sha256"] == sha256_file(sidecar)

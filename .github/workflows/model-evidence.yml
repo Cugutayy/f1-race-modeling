@@ -61,6 +61,18 @@ jobs:
           assert report["winner_calibration"], "missing calibration/ECE evidence"
           live_evidence = json.loads((root / "model_evidence.json").read_text())
           assert live_evidence["winner_calibration"], "deployable evidence lost calibration data"
+          assert report["provenance"]["provider"] == "Jolpica"
+          assert report["provenance"]["years"] == list(range(2018, 2027))
+          assert report["provenance"]["requests"], "source request provenance is missing"
+          assert len(report["provenance"]["source_csv_sha256"]) == 64
+          assert len(report["provenance"]["provenance_sidecar_sha256"]) == 64
+          assert live_evidence["provider"] == "Jolpica"
+          assert live_evidence["years"] == list(range(2018, 2027))
+          assert live_evidence["source_request_count"] > 0
+          assert len(live_evidence["source_provenance_sha256"]) == 64
+          assert live_evidence["source_csv_sha256"] == report["provenance"]["source_csv_sha256"]
+          assert release["source_provider"] == "Jolpica"
+          assert release["source_years"] == list(range(2018, 2027))
           assert release["model_training_blocks"] == ["fit", "tuning"]
           assert release["calibration_used_for_model_fit"] is False
           assert manifest.benchmark_run_id == report["run_id"]

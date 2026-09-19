@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -25,10 +26,69 @@ def _git_sha() -> str:
         return "unknown"
 
 
+def _validated_provenance(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("Release provenance must be a JSON object")
+    provider = value.get("provider")
+    years = value.get("years")
+    requests = value.get("requests")
+    if not isinstance(provider, str) or not provider.strip():
+        raise ValueError("Release provenance is missing provider")
+    if not isinstance(years, list) or not years or any(
+        not isinstance(year, int) or year < 1950 or year > 2100 for year in years
+    ):
+        raise ValueError("Release provenance is missing valid source years")
+    if not isinstance(requests, list) or not requests:
+        raise ValueError("Release provenance is missing provider request evidence")
+    for index, request in enumerate(requests):
+        if not isinstance(request, dict):
+            raise ValueError(f"Release provenance request {index} is not an object")
+        url = request.get("url")
+        retrieved_at = request.get("retrieved_at")
+        digest = request.get("sha256")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise ValueError(f"Release provenance request {index} has invalid URL")
+        if not isinstance(retrieved_at, str) or not retrieved_at.strip():
+            raise ValueError(f"Release provenance request {index} has no retrieval time")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest.lower())
+        ):
+            raise ValueError(f"Release provenance request {index} has invalid SHA-256")
+    return dict(value)
+
+
+def _input_provenance(path: Path) -> dict[str, Any]:
+    path = Path(path)
+    sidecar = path.with_suffix(".provenance.json")
+    if not sidecar.exists():
+        raise FileNotFoundError(
+            f"Sealed release requires source provenance sidecar: {sidecar}"
+        )
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    provenance = _validated_provenance(payload)
+    provenance["source_csv_name"] = path.name
+    provenance["source_csv_sha256"] = sha256_file(path)
+    provenance["provenance_sidecar_sha256"] = sha256_file(sidecar)
+    return provenance
+
+
+def _provenance_digest(provenance: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        provenance,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def build_release(
     frame: pd.DataFrame,
     output: Path,
     *,
+    provenance: dict[str, Any],
     test_events: int = 12,
     tuning_events: int = 6,
     calibration_events: int = 4,
@@ -38,6 +98,7 @@ def build_release(
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     clean = validate(frame)
+    source_provenance = _validated_provenance(provenance)
     metrics, predictions, audit = benchmark_v2(
         clean,
         test_events=test_events,
@@ -47,7 +108,14 @@ def build_release(
         modern_names=modern_names,
     )
     benchmark_dir = output / "benchmark"
-    report = save_v2_report(clean, metrics, predictions, audit, benchmark_dir)
+    report = save_v2_report(
+        clean,
+        metrics,
+        predictions,
+        audit,
+        benchmark_dir,
+        provenance=source_provenance,
+    )
     uncertainty_dir = benchmark_dir / "evidence"
     uncertainty = save_uncertainty(metrics, uncertainty_dir, baseline="qualifying_order", samples=10000, seed=42)
 
@@ -111,6 +179,9 @@ def build_release(
         "uncertainty": str(uncertainty_dir / "uncertainty.json"),
         "uncertainty_unit": uncertainty["unit"],
         "uncertainty_bootstrap_samples": uncertainty["bootstrap_samples"],
+        "source_provenance_sha256": _provenance_digest(source_provenance),
+        "source_provider": source_provenance["provider"],
+        "source_years": source_provenance["years"],
     }
     (output / "release.json").write_text(json.dumps(release, indent=2), encoding="utf-8")
     return release
@@ -127,9 +198,13 @@ def main(argv=None) -> int:
     parser.add_argument("--modern-models", default="hist_gradient_boosting,extra_trees")
     args = parser.parse_args(argv)
     frame = pd.read_csv(args.input)
+    provenance = _input_provenance(args.input)
     models = tuple(x.strip() for x in args.modern_models.split(",") if x.strip())
     release = build_release(
-        frame, args.output, test_events=args.test_events,
+        frame,
+        args.output,
+        provenance=provenance,
+        test_events=args.test_events,
         tuning_events=args.tuning_events, calibration_events=args.calibration_events,
         min_fit_events=args.min_fit_events, modern_names=models,
     )
