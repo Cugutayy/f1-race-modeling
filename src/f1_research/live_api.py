@@ -8,6 +8,7 @@ raw capture files and provider credentials never reach the browser.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -36,17 +37,22 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE = ROOT / "reports" / "local" / "live" / "state.json"
 DEFAULT_MODEL = ROOT / "reports" / "local" / "lap-strict" / "next_lap_strict.joblib"
 DEFAULT_PRIORS = ROOT / "reports" / "local" / "lap-strict" / "strategy_priors.json"
+DEFAULT_STRICT_RELEASE = (
+    ROOT / "reports" / "local" / "lap-strict" / "strict_release_manifest.json"
+)
 DEFAULT_EVIDENCE = ROOT / "reports" / "local" / "model_evidence.json"
 DEFAULT_PREDICTION_LEDGER = ROOT / "reports" / "local" / "live" / "predictions.jsonl"
 MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
+MAX_STRICT_RELEASE_BYTES = 4 * 1024 * 1024
 MAX_TELEMETRY_TAIL_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_LIVE_AGE_S = 20.0
 
 app = FastAPI(title="F1 Race Intelligence API", version="1.0.0", docs_url="/docs")
 
 _artifact_cache: dict[str, Any] = {"key": None, "value": None}
+_strict_release_cache: dict[str, Any] = {"key": None, "value": None}
 
 
 def _path(env_name: str, default: Path) -> Path:
@@ -73,6 +79,10 @@ def _model_path() -> Path:
 
 def _priors_path() -> Path:
     return _path("F1_STRATEGY_PRIORS_PATH", DEFAULT_PRIORS)
+
+
+def _strict_release_path() -> Path:
+    return _path("F1_STRICT_RELEASE_MANIFEST_PATH", DEFAULT_STRICT_RELEASE)
 
 
 def _evidence_path() -> Path:
