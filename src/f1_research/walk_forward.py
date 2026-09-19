@@ -8,7 +8,7 @@ feature/label leakage can be mechanically audited.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
