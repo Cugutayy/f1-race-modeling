@@ -26,11 +26,11 @@ jobs:
           - {year: 2024, round: 8, session_key: 9523}
           - {year: 2024, round: 9, session_key: 9531}
           - {year: 2024, round: 14, session_key: 9574}
-          - {year: 2024, round: 21, session_key: 9636}
+          - {year: 2024, round: 2, session_key: 9480}
           - {year: 2024, round: 23, session_key: 9655}
           - {year: 2025, round: 1, session_key: 9693}
-          - {year: 2025, round: 2, session_key: 9998}
-          - {year: 2026, round: 1, session_key: 11234}
+          - {year: 2024, round: 3, session_key: 9488}
+          - {year: 2024, round: 4, session_key: 9496}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -92,8 +92,9 @@ jobs:
           matrix = json.loads(Path("reports/data-truth/data_truth_matrix.json").read_text())
           expected = {
               (2023, 3, 7787), (2024, 1, 9472), (2024, 5, 9673), (2024, 6, 9507),
-              (2024, 8, 9523), (2024, 9, 9531), (2024, 14, 9574), (2024, 21, 9636),
-              (2024, 23, 9655), (2025, 1, 9693), (2025, 2, 9998), (2026, 1, 11234),
+              (2024, 2, 9480), (2024, 3, 9488), (2024, 4, 9496),
+              (2024, 8, 9523), (2024, 9, 9531), (2024, 14, 9574),
+              (2024, 23, 9655), (2025, 1, 9693),
           }
           actual = {
               (int(row["year"]), int(row["round_number"]), int(row["openf1_session_key"]))

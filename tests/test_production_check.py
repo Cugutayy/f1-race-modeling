@@ -130,6 +130,8 @@ def test_production_gate_rejects_incomplete_hard_provider_evidence(tmp_path):
     payload = json.loads(truth.read_text())
     payload["events"][0]["verification_status"] = "PASS_WITH_GAPS"
     payload["events"][0]["insufficient_hard_count"] = 1
+    payload["events"][0]["year"] = 2024
+    payload["events"][0]["round_number"] = 1
     truth.write_text(json.dumps(payload))
     result = run_checks(
         data_truth=truth,
@@ -143,6 +145,7 @@ def test_production_gate_rejects_incomplete_hard_provider_evidence(tmp_path):
     )
     assert result["production_ready"] is False
     assert "hard-field evidence" in result["checks"]["data_truth"]["detail"]
+    assert "2024-R1" in result["checks"]["data_truth"]["detail"]
 
 
 def test_production_gate_rejects_failed_real_audit(tmp_path):

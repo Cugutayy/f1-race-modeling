@@ -39,25 +39,26 @@ def _check_data_truth(
     for index, event in enumerate(events):
         if not isinstance(event, dict):
             return False, f"data-truth event {index} is not an object"
+        identity = f"{event.get('year', '?')}-R{event.get('round_number', '?')} (index {index})"
         if event.get("passed") is not True:
-            return False, f"data-truth event {index} is not explicitly passing"
+            return False, f"data-truth event {identity} is not explicitly passing"
         if event.get("verification_status") not in {"PASS", "PASS_WITH_GAPS"}:
-            return False, f"data-truth event {index} has invalid passing status"
+            return False, f"data-truth event {identity} has invalid passing status"
         if event.get("event_identity_verified") is not True:
-            return False, f"data-truth event {index} lacks verified event identity"
+            return False, f"data-truth event {identity} lacks verified event identity"
         if event.get("reconciliation_performed") is not True:
-            return False, f"data-truth event {index} was not reconciled"
+            return False, f"data-truth event {identity} was not reconciled"
         if int(event.get("hard_mismatch_count", -1)) != 0:
-            return False, f"data-truth event {index} contains hard mismatches"
+            return False, f"data-truth event {identity} contains hard mismatches"
         if int(event.get("insufficient_hard_count", -1)) != 0:
-            return False, f"data-truth event {index} lacks complete hard-field evidence"
+            return False, f"data-truth event {identity} lacks complete hard-field evidence"
         if int(event.get("provider_error_count", -1)) != 0:
-            return False, f"data-truth event {index} contains provider errors"
+            return False, f"data-truth event {identity} contains provider errors"
         source_sha = str(event.get("source_sha256") or "").lower()
         if len(source_sha) != 64 or any(ch not in "0123456789abcdef" for ch in source_sha):
-            return False, f"data-truth event {index} lacks a valid source SHA-256"
+            return False, f"data-truth event {identity} lacks a valid source SHA-256"
         if event.get("producer_git_sha") != producer_git_sha:
-            return False, f"data-truth event {index} producer revision disagrees with matrix"
+            return False, f"data-truth event {identity} producer revision disagrees with matrix"
     return True, f"{len(events)} audited events; reconciled with zero hard/provider failures"
 
 
