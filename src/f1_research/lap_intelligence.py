@@ -21,6 +21,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from .pace_history import pace_duration_is_plausible, rain_state, same_rain_regime
 from .value_parsing import strict_optional_bool
 
 NUMERIC_FEATURES = [
@@ -71,38 +72,6 @@ def _times(frame: pd.DataFrame, column: str) -> pd.Series:
     if column not in frame:
         return pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns, UTC]")
     return pd.to_datetime(frame[column], format="ISO8601", utc=True, errors="coerce")
-
-
-def _rain_state(value: Any) -> bool | None:
-    if value is None or pd.isna(value):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not np.isfinite(number):
-        return None
-    return bool(number > 0)
-
-
-def _same_rain_regime(previous: bool | None, current: bool | None) -> bool:
-    return previous is None or current is None or previous == current
-
-
-def _pace_history_duration_is_plausible(
-    duration_s: float,
-    previous_durations_s: list[float],
-) -> bool:
-    """Reject obvious slow neutralization/restart outliers using only prior observed pace."""
-    if not np.isfinite(duration_s) or duration_s <= 0:
-        return False
-    history = np.asarray(previous_durations_s[-5:], dtype=float)
-    history = history[np.isfinite(history) & (history > 0)]
-    if not len(history):
-        return True
-    reference = float(np.median(history))
-    slow_margin = max(10.0, 0.25 * reference)
-    return duration_s <= reference + slow_margin
 
 
 def _stint_features(laps: pd.DataFrame, stint_rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -240,11 +209,11 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
             start = lap.start
             if pd.isna(start):
                 continue
-            rain_state = _rain_state(lap.get("rainfall"))
+            rain_state = rain_state(lap.get("rainfall"))
             usable = [
                 (available, duration, previous_rain, previous_lap)
                 for available, duration, previous_rain, previous_lap in completed
-                if available <= start and _same_rain_regime(previous_rain, rain_state)
+                if available <= start and same_rain_regime(previous_rain, rain_state)
             ]
             values = np.asarray([duration for _, duration, _, _ in usable[-5:]], dtype=float)
             if len(values) >= minimum_history:
@@ -303,14 +272,14 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
                 duration
                 for available, duration, previous_rain, _ in completed
                 if available <= lap.target_available_at
-                and _same_rain_regime(previous_rain, rain_state)
+                and same_rain_regime(previous_rain, rain_state)
             ]
             duration = float(lap.target_s)
             if (
                 pit_out is False
                 and not known_pit_lap
                 and not neutralized
-                and _pace_history_duration_is_plausible(duration, same_regime_history)
+                and pace_duration_is_plausible(duration, same_regime_history)
             ):
                 completed.append((
                     lap.target_available_at,
