@@ -84,11 +84,24 @@ Artifacts used by live inference:
 ```text
 reports/local/lap-strict/next_lap_strict.joblib
 reports/local/lap-strict/strategy_priors.json
+reports/local/lap-strict/strict_release_manifest.json
 ```
 
 `strategy_priors.json` contains separately audited public-data priors for pit loss,
 Safety Car frequency, reliability, tyres and close-following traffic. These are not
 team-private engineering signals.
+
+`strict_release_manifest.json` binds the exact strict model bytes, strategy-prior bytes,
+feature schema, Git revision, calibration/test session identities and per-session
+OpenF1 source-content hashes. Cache paths and cache-hit status are recorded for
+operations but are not allowed to change the content identity when the raw bytes are
+identical.
+
+For an immutable CI evidence bundle, run the **Strict live pace evidence** workflow.
+It rebuilds the latest completed-race release, verifies the manifest/hash/conformal
+contract and uploads the model, priors, report, manifests and raw source snapshots as
+one GitHub Actions artifact. The same workflow also runs on the explicit
+`.release-trigger` release marker.
 
 ## 4. Compare modern and local foundation models correctly
 
@@ -135,7 +148,7 @@ Then build the compact evidence file consumed by the live product:
 ```bash
 python -m f1_research.model_evidence \
   --benchmark-dir reports/local/benchmark-v2 \
-  --output reports/local/lap-strict/model_evidence.json
+  --output reports/local/model_evidence.json
 ```
 
 `model_evidence.json` is generated from the versioned sealed benchmark outputs. It is
@@ -196,7 +209,7 @@ export F1_LIVE_EVENTS_PATH="$PWD/reports/local/live/events.jsonl"
 export F1_LIVE_MANIFEST_PATH="$PWD/reports/local/live/manifest.json"
 export F1_STRICT_MODEL_PATH="$PWD/reports/local/lap-strict/next_lap_strict.joblib"
 export F1_STRATEGY_PRIORS_PATH="$PWD/reports/local/lap-strict/strategy_priors.json"
-export F1_MODEL_EVIDENCE_PATH="$PWD/reports/local/lap-strict/model_evidence.json"
+export F1_MODEL_EVIDENCE_PATH="$PWD/reports/local/model_evidence.json"
 
 f1-api
 ```
@@ -244,10 +257,13 @@ Then:
 docker compose -f compose.live.yaml up --build -d
 ```
 
-The two services share a persistent `live-data` volume. The API receives model files
-from the read-only local mount `reports/local/lap-strict`. Put
-`model_evidence.json` in that directory along with `next_lap_strict.joblib` and
-`strategy_priors.json` before starting the API if the Evidence panel should be enabled.
+The two services share a persistent `live-data` volume. The API mounts only the
+strict live artifacts from `reports/local/lap-strict` at `/models/lap-strict`, so the
+mount cannot shadow the verified race-outcome evidence bundled into the worker image
+at `/models/model_evidence.json`. Keep `next_lap_strict.joblib`,
+`strategy_priors.json` and `strict_release_manifest.json` in the local strict-artifact
+directory. Rebuild the worker image when the tracked
+`reports/local/model_evidence.json` changes.
 
 ## 8. Vercel / Next.js
 
