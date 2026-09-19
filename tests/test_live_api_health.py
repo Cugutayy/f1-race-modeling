@@ -64,11 +64,21 @@ def _strict_release_fixture(monkeypatch, tmp_path):
     release = tmp_path / "strict_release_manifest.json"
     model.write_bytes(b"strict-model-bytes")
     priors.write_bytes(b'{"schema_version":1,"priors":{"pit_loss":20.0}}')
+    baseline_guard = {
+        "baseline": "recent_median_5_baseline",
+        "minimum_relative_improvement": 0.01,
+        "tuning_baseline_mae_s": 0.8,
+        "tuning_selected_mae_s": 0.8,
+        "challenger_selected": False,
+    }
     artifact = {
-        "schema_version": 3,
+        "schema_version": 4,
         "task": "next_lap_strict_mixture",
         "features": ["lap_number", "driver_number"],
-        "selected_regressor": "extra_trees",
+        "selected_regressor": "recent_median_5_baseline",
+        "pace_prediction_mode": "recent_median_5_baseline",
+        "pace_regressor": None,
+        "baseline_guard": baseline_guard,
         "calibration_sessions": [1001, 1002, 1003],
         "sealed_test_session": 1004,
         "conformal_radii_s": {
@@ -83,6 +93,11 @@ def _strict_release_fixture(monkeypatch, tmp_path):
         "schema_version": 1,
         "evidence_kind": "strict_live_pace_release",
         "git_sha": "a" * 40,
+        "artifact_schema_version": 4,
+        "pace_prediction_mode": "recent_median_5_baseline",
+        "baseline_guard": baseline_guard,
+        "validation_scope": "retrospective_historical_posthoc_diagnostic",
+        "prospective_validation": False,
         "feature_policy": "strict_asof_only",
         "feature_schema_sha256": live_api.sha256_json(artifact["features"]),
         "model_sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
@@ -121,6 +136,9 @@ def test_strict_runtime_verifies_hashes_and_invalidates_cache(monkeypatch, tmp_p
     assert release["verified"] is True
     assert release["production_eligible"] is True
     assert release["calibration_sessions"] == [1001, 1002, 1003]
+    assert release["artifact_schema_version"] == 4
+    assert release["pace_prediction_mode"] == "recent_median_5_baseline"
+    assert release["baseline_guard"]["challenger_selected"] is False
 
     priors.write_bytes(b'{"schema_version":1,"priors":{"pit_loss":21.0},"changed":true}')
     with pytest.raises(live_api.HTTPException) as exc:
@@ -129,10 +147,24 @@ def test_strict_runtime_verifies_hashes_and_invalidates_cache(monkeypatch, tmp_p
     assert "strategy-prior sha-256" in str(exc.value.detail).lower()
 
 
+def test_strict_runtime_rejects_legacy_artifact_schema(monkeypatch, tmp_path):
+    _, _, release_path, artifact = _strict_release_fixture(monkeypatch, tmp_path)
+    payload = json.loads(release_path.read_text())
+    payload["artifact_schema_version"] = 3
+    release_path.write_text(json.dumps(payload), encoding="utf-8")
+    artifact["schema_version"] = 3
+    live_api._artifact_cache.update({"key": None, "value": None, "release": None})
+
+    with pytest.raises(live_api.HTTPException) as exc:
+        live_api._load_artifact()
+    assert exc.value.status_code == 503
+    assert "schema v4" in str(exc.value.detail).lower()
+
+
 def test_strict_runtime_override_is_explicitly_non_production(monkeypatch, tmp_path):
     model = tmp_path / "next_lap_strict.joblib"
     model.write_bytes(b"model")
-    artifact = {"schema_version": 3}
+    artifact = {"schema_version": 4}
     monkeypatch.setattr(live_api, "_model_path", lambda: model)
     monkeypatch.setattr(live_api, "load_strict_artifact", lambda path: artifact)
     monkeypatch.setenv("F1_ALLOW_UNVERIFIED_STRICT_MODEL", "1")
