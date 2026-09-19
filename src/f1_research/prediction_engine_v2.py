@@ -4,9 +4,11 @@ Keeps pace, race-state and strategy outputs separate, then fuses them into one
 auditable forecast envelope. The engine never manufactures unavailable signals.
 """
 from __future__ import annotations
+
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
-import math
+
 
 @dataclass(frozen=True)
 class PredictionQuality:
@@ -27,16 +29,21 @@ def assess_quality(state: dict[str, Any], pace_predictions: list[dict[str, Any]]
     coverage = usable / len(drivers) if drivers else 0.0
     age = state.get("state_age_s")
     reasons: list[str] = []
-    if not drivers: reasons.append("no_drivers")
-    if coverage < 0.8: reasons.append("low_field_pace_coverage")
-    if _finite(age) and float(age) > 20: reasons.append("stale_state")
+    if not drivers:
+        reasons.append("no_drivers")
+    if coverage < 0.8:
+        reasons.append("low_field_pace_coverage")
+    if _finite(age) and float(age) > 20:
+        reasons.append("stale_state")
     pace_available = bool(pace)
-    if not pace_available: reasons.append("strict_pace_unavailable")
+    if not pace_available:
+        reasons.append("strict_pace_unavailable")
     uncertainty = bool(pace) and all(
         _finite(row.get("green_lap_lower_s")) and _finite(row.get("green_lap_upper_s"))
         for row in pace
     )
-    if pace and not uncertainty: reasons.append("pace_uncertainty_incomplete")
+    if pace and not uncertainty:
+        reasons.append("pace_uncertainty_incomplete")
     return PredictionQuality(
         state_age_s=float(age) if _finite(age) else None,
         pace_available=pace_available,
