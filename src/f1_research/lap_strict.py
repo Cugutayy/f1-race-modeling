@@ -41,14 +41,22 @@ STRICT_NUMERIC = [
 STRICT_CATEGORICAL = ["driver_number"]
 STRICT_FEATURES = STRICT_NUMERIC + STRICT_CATEGORICAL
 REGIMES = ("green", "neutralized", "pit")
+BASELINE_REGRESSOR = "recent_median_5_baseline"
+BASELINE_MODE = "recent_median_5_baseline"
+RESIDUAL_MODE = "recent_median_5_residual"
+MIN_BASELINE_RELATIVE_IMPROVEMENT = 0.01
 
 
 @dataclass(frozen=True)
 class StrictBenchmark:
     test_session: int
     selected_regressor: str
+    pace_prediction_mode: str
+    challenger_selected: bool
     green_rows: int
     calibration_events: int
+    tuning_baseline_mae_s: float
+    tuning_selected_mae_s: float
     green_mae_s: float
     green_rmse_s: float
     recent_median_mae_s: float
@@ -172,39 +180,111 @@ def _full_probabilities(classifier: Pipeline, frame: pd.DataFrame) -> np.ndarray
 
 
 def _fit_green(train: pd.DataFrame, spec: LapModelSpec) -> Pipeline:
+    """Fit a circuit-scale-invariant residual over the recent-median baseline."""
     green = _green(train)
     if len(green) < 50:
         raise ValueError("Insufficient green laps for strict pace regression")
+    baseline = pd.to_numeric(green.recent_median_5_s, errors="coerce").to_numpy(dtype=float)
+    target = pd.to_numeric(green.target_s, errors="coerce").to_numpy(dtype=float)
+    mask = np.isfinite(baseline) & np.isfinite(target)
+    if int(mask.sum()) < 50:
+        raise ValueError("Insufficient finite green-lap residual targets")
     model = build_strict_regressor(spec)
-    model.fit(green[STRICT_FEATURES], green.target_s)
+    model.fit(green.loc[mask, STRICT_FEATURES], target[mask] - baseline[mask])
     return model
 
 
-def _select(train: pd.DataFrame, tuning: pd.DataFrame,
-            specs: tuple[LapModelSpec, ...]) -> tuple[LapModelSpec, list[dict[str, Any]]]:
+def _predict_green_pace(
+    model: Pipeline | None,
+    frame: pd.DataFrame,
+    mode: str,
+) -> np.ndarray:
+    baseline = pd.to_numeric(frame.recent_median_5_s, errors="coerce").to_numpy(dtype=float)
+    if mode == BASELINE_MODE:
+        predicted = baseline
+    elif mode == RESIDUAL_MODE:
+        if model is None:
+            raise ValueError("Residual pace mode requires a fitted regressor")
+        residual = np.asarray(model.predict(frame[STRICT_FEATURES]), dtype=float)
+        predicted = baseline + residual
+    else:
+        raise ValueError(f"Unsupported strict pace prediction mode: {mode}")
+    if not np.isfinite(predicted).all() or np.any(predicted <= 0):
+        raise ValueError("Strict pace prediction produced invalid lap durations")
+    return predicted
+
+
+def _select(
+    train: pd.DataFrame,
+    tuning: pd.DataFrame,
+    specs: tuple[LapModelSpec, ...],
+) -> tuple[LapModelSpec | None, str, list[dict[str, Any]], float, float]:
+    """Select a residual challenger only when it beats the live-available baseline."""
     target = _green(tuning)
     if target.empty:
         raise ValueError("Tuning race has no green laps")
-    trials: list[dict[str, Any]] = []
+
+    actual = target.target_s.to_numpy(dtype=float)
+    baseline_prediction = target.recent_median_5_s.to_numpy(dtype=float)
+    baseline_mae, baseline_rmse = _pace_metrics(actual, baseline_prediction)
+    trials: list[dict[str, Any]] = [{
+        "model": BASELINE_REGRESSOR,
+        "params": {},
+        "pace_prediction_mode": BASELINE_MODE,
+        "mae_s": baseline_mae,
+        "rmse_s": baseline_rmse,
+        "relative_improvement_vs_baseline": 0.0,
+        "beats_recent_median_baseline": True,
+    }]
+
+    fitted_specs: dict[str, LapModelSpec] = {}
     for spec in specs:
         try:
             model = _fit_green(train, spec)
-            predicted = model.predict(target[STRICT_FEATURES])
-            mae, rmse = _pace_metrics(target.target_s.to_numpy(), predicted)
-            trials.append({"model": spec.name, "params": dict(spec.params), "mae_s": mae, "rmse_s": rmse})
+            predicted = _predict_green_pace(model, target, RESIDUAL_MODE)
+            mae, rmse = _pace_metrics(actual, predicted)
+            relative = (baseline_mae - mae) / max(baseline_mae, 1e-12)
+            beats = relative >= MIN_BASELINE_RELATIVE_IMPROVEMENT
+            trials.append({
+                "model": spec.name,
+                "params": dict(spec.params),
+                "pace_prediction_mode": RESIDUAL_MODE,
+                "mae_s": mae,
+                "rmse_s": rmse,
+                "relative_improvement_vs_baseline": relative,
+                "beats_recent_median_baseline": beats,
+            })
+            fitted_specs[spec.name] = spec
         except (ValueError, RuntimeError, MemoryError) as exc:
             trials.append({
                 "model": spec.name,
                 "params": dict(spec.params),
+                "pace_prediction_mode": RESIDUAL_MODE,
                 "mae_s": np.inf,
                 "rmse_s": np.inf,
+                "relative_improvement_vs_baseline": None,
+                "beats_recent_median_baseline": False,
                 "error": str(exc),
             })
-    valid = [row for row in trials if np.isfinite(row["mae_s"])]
-    if not valid:
-        raise ValueError("No strict next-lap candidate completed tuning")
-    winner = min(valid, key=lambda row: (row["mae_s"], row["model"]))
-    return next(spec for spec in specs if spec.name == winner["model"]), trials
+
+    eligible = [
+        row
+        for row in trials
+        if row["model"] != BASELINE_REGRESSOR
+        and np.isfinite(row["mae_s"])
+        and row["beats_recent_median_baseline"]
+    ]
+    if not eligible:
+        return None, BASELINE_MODE, trials, baseline_mae, baseline_mae
+
+    winner = min(eligible, key=lambda row: (row["mae_s"], row["model"]))
+    return (
+        fitted_specs[winner["model"]],
+        RESIDUAL_MODE,
+        trials,
+        baseline_mae,
+        float(winner["mae_s"]),
+    )
 
 
 def fit_strict_mixture(
@@ -242,9 +322,13 @@ def fit_strict_mixture(
     ]
     test = datasets[-1].copy()
 
-    selected, trials = _select(train, tuning, specs)
+    selected, pace_mode, trials, tuning_baseline_mae, tuning_selected_mae = _select(
+        train,
+        tuning,
+        specs,
+    )
     pre_cal = pd.concat([train, tuning], ignore_index=True)
-    regressor = _fit_green(pre_cal, selected)
+    regressor = _fit_green(pre_cal, selected) if selected is not None else None
     classifier_train = pre_cal[pre_cal.lap_regime.notna()].copy()
     if classifier_train.empty:
         raise ValueError("No known strict lap-regime labels are available for classifier training")
@@ -256,7 +340,7 @@ def fit_strict_mixture(
     if any(frame.empty for frame in calibration_green):
         raise ValueError("A conformal calibration event has no green laps")
     cal_green = pd.concat(calibration_green, ignore_index=True)
-    cal_prediction = regressor.predict(cal_green[STRICT_FEATURES])
+    cal_prediction = _predict_green_pace(regressor, cal_green, pace_mode)
     coverage_levels = (0.50, 0.80, 0.90, 0.95)
     conformal_radii = {
         f"{coverage:.2f}": _conformal_radius(
@@ -270,7 +354,7 @@ def fit_strict_mixture(
     radius = _conformal_radius(cal_green.target_s.to_numpy(), cal_prediction, alpha)
 
     test_green = _green(test)
-    prediction = regressor.predict(test_green[STRICT_FEATURES])
+    prediction = _predict_green_pace(regressor, test_green, pace_mode)
     green_mae, green_rmse = _pace_metrics(test_green.target_s.to_numpy(), prediction)
     recent_median_mae = _mae(test_green.target_s.to_numpy(), test_green.recent_median_5_s.to_numpy())
     last_lap_mae = _mae(test_green.target_s.to_numpy(), test_green.last_lap_s.to_numpy())
@@ -302,9 +386,13 @@ def fit_strict_mixture(
 
     summary = StrictBenchmark(
         test_session=int(test.session_key.iloc[0]),
-        selected_regressor=selected.name,
+        selected_regressor=(selected.name if selected is not None else BASELINE_REGRESSOR),
+        pace_prediction_mode=pace_mode,
+        challenger_selected=selected is not None,
         green_rows=len(test_green),
         calibration_events=len(calibration_frames),
+        tuning_baseline_mae_s=tuning_baseline_mae,
+        tuning_selected_mae_s=tuning_selected_mae,
         green_mae_s=green_mae,
         green_rmse_s=green_rmse,
         recent_median_mae_s=recent_median_mae,
@@ -323,13 +411,26 @@ def fit_strict_mixture(
         regime_log_loss=regime_loss,
     )
     artifact = {
-        "schema_version": 3,
+        "schema_version": 4,
         "task": "next_lap_strict_mixture",
         "features": STRICT_FEATURES,
         "regimes": list(REGIMES),
         "regime_classifier": classifier,
         "pace_regressor": regressor,
-        "selected_regressor": selected.name,
+        "selected_regressor": (selected.name if selected is not None else BASELINE_REGRESSOR),
+        "pace_prediction_mode": pace_mode,
+        "pace_regressor_target": (
+            "target_s_minus_recent_median_5_s"
+            if pace_mode == RESIDUAL_MODE
+            else "recent_median_5_s"
+        ),
+        "baseline_guard": {
+            "baseline": BASELINE_REGRESSOR,
+            "minimum_relative_improvement": MIN_BASELINE_RELATIVE_IMPROVEMENT,
+            "tuning_baseline_mae_s": tuning_baseline_mae,
+            "tuning_selected_mae_s": tuning_selected_mae,
+            "challenger_selected": selected is not None,
+        },
         "conformal_alpha": alpha,
         "conformal_nominal_coverage": requested_coverage,
         "conformal_radius_s": radius,
@@ -351,6 +452,14 @@ def fit_strict_mixture(
         "calibration_sessions": [
             int(frame.session_key.iloc[0]) for frame in calibration_frames
         ],
+        "pace_prediction_mode": pace_mode,
+        "baseline_guard": {
+            "baseline": BASELINE_REGRESSOR,
+            "minimum_relative_improvement": MIN_BASELINE_RELATIVE_IMPROVEMENT,
+            "tuning_baseline_mae_s": tuning_baseline_mae,
+            "tuning_selected_mae_s": tuning_selected_mae,
+            "challenger_selected": selected is not None,
+        },
         "regressor_trials": [
             {key: (None if isinstance(value, float) and np.isinf(value) else value) for key, value in row.items()}
             for row in trials
@@ -380,7 +489,11 @@ def predict_live_strict(artifact: dict[str, Any], snapshot: dict[str, Any]) -> p
     if frame.empty:
         return frame
     probabilities = _full_probabilities(artifact["regime_classifier"], frame)
-    pace = artifact["pace_regressor"].predict(frame[STRICT_FEATURES])
+    pace = _predict_green_pace(
+        artifact.get("pace_regressor"),
+        frame,
+        str(artifact.get("pace_prediction_mode") or ""),
+    )
     radius = float(artifact["conformal_radius_s"])
     output = frame.copy()
     output["predicted_green_lap_s"] = pace
