@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .data import validate
+from .data import survivorship_audit, validate
 from .features import FEATURES, build_features
 from .group_rankers import NativeGroupRanker, RankingSpec
 from .model import distribution, estimator, probability, score_event
@@ -180,6 +180,7 @@ def benchmark_v2(
     include_ensemble: bool = True,
     native_ranker_names: tuple[str, ...] = (),
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    survivorship = survivorship_audit(frame)
     features = build_features(validate(frame))
     split = _split_blocks(features, test_events, tuning_events, calibration_events, min_fit_events)
     pre_cal_ids = split["fit"] + split["tuning"]
@@ -298,6 +299,7 @@ def benchmark_v2(
         "temperatures": temperatures,
         "pl_optimization": pl_model.optimization_,
         "feature_schema": FEATURES,
+        "survivorship": survivorship,
         "native_rankers": list(native_ranker_names),
         "native_ranker_protocol": (
             "fixed-hyperparameter group-aware ranking challengers fit only on pre-calibration history; "
