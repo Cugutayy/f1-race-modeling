@@ -232,14 +232,217 @@ def _trusted_live_audit(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    raw = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _validated_sha256(value: Any, *, field: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise HTTPException(status_code=503, detail=f"{field} is not a valid SHA-256 digest")
+    return digest
+
+
+def _read_strict_release_manifest() -> dict[str, Any]:
+    path = _strict_release_path()
+    if not path.exists():
+        raise HTTPException(status_code=503, detail="Strict release manifest is unavailable")
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > MAX_STRICT_RELEASE_BYTES:
+            raise HTTPException(status_code=503, detail="Strict release manifest failed size validation")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Strict release manifest is unreadable") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=503, detail="Strict release manifest must be an object")
+    if value.get("schema_version") != 1:
+        raise HTTPException(status_code=503, detail="Strict release manifest schema is unsupported")
+    if value.get("evidence_kind") != "strict_live_pace_release":
+        raise HTTPException(status_code=503, detail="Strict release manifest kind is unsupported")
+    if value.get("task") != "next_lap_strict_mixture":
+        raise HTTPException(status_code=503, detail="Strict release task is unsupported")
+    if value.get("feature_policy") != "strict_asof_only":
+        raise HTTPException(status_code=503, detail="Strict release feature policy is unsupported")
+    if value.get("retrospective_stint_features_used") is not False:
+        raise HTTPException(
+            status_code=503,
+            detail="Strict release does not prove retrospective stint exclusion",
+        )
+
+    _validated_sha256(value.get("model_sha256"), field="strict release model_sha256")
+    _validated_sha256(
+        value.get("strategy_priors_sha256"),
+        field="strict release strategy_priors_sha256",
+    )
+    _validated_sha256(
+        value.get("feature_schema_sha256"),
+        field="strict release feature_schema_sha256",
+    )
+    _validated_sha256(
+        value.get("source_evidence_sha256"),
+        field="strict release source_evidence_sha256",
+    )
+    git_sha = str(value.get("git_sha") or "").strip().lower()
+    if len(git_sha) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in git_sha
+    ):
+        raise HTTPException(status_code=503, detail="Strict release Git SHA is invalid")
+
+    calibration_sessions = value.get("calibration_sessions")
+    sealed_test_session = value.get("sealed_test_session")
+    if (
+        not isinstance(calibration_sessions, list)
+        or len(calibration_sessions) < 2
+        or any(not isinstance(item, int) or item <= 0 for item in calibration_sessions)
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict release calibration sessions are invalid",
+        )
+    if (
+        not isinstance(sealed_test_session, int)
+        or sealed_test_session <= 0
+        or sealed_test_session in calibration_sessions
+    ):
+        raise HTTPException(status_code=503, detail="Strict release sealed test session is invalid")
+
+    source_sessions = value.get("source_sessions")
+    if not isinstance(source_sessions, list) or len(source_sessions) < len(calibration_sessions) + 3:
+        raise HTTPException(status_code=503, detail="Strict release source-session evidence is incomplete")
+
+    radii = value.get("conformal_radii_s")
+    required_levels = ("0.50", "0.80", "0.90", "0.95")
+    if not isinstance(radii, dict) or set(radii) != set(required_levels):
+        raise HTTPException(status_code=503, detail="Strict release conformal levels are incomplete")
+    try:
+        radius_values = [float(radii[level]) for level in required_levels]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Strict release conformal radii are invalid") from exc
+    if (
+        any(not math.isfinite(radius) or radius <= 0 for radius in radius_values)
+        or radius_values != sorted(radius_values)
+    ):
+        raise HTTPException(status_code=503, detail="Strict release conformal radii are incoherent")
+    return value
+
+
+def _file_signature(path: Path) -> tuple[str, int, int]:
+    stat = path.stat()
+    return str(path), stat.st_mtime_ns, stat.st_size
+
+
+def _verify_strict_release_files() -> dict[str, Any]:
+    model_path = _model_path()
+    priors_path = _priors_path()
+    release_path = _strict_release_path()
+    missing = [
+        label
+        for label, path in (
+            ("strict_model", model_path),
+            ("strategy_priors", priors_path),
+            ("strict_release_manifest", release_path),
+        )
+        if not path.exists()
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail={"missing": missing, "reason": "strict release files are incomplete"},
+        )
+    key = (
+        _file_signature(model_path),
+        _file_signature(priors_path),
+        _file_signature(release_path),
+    )
+    if _strict_release_cache["key"] == key:
+        return _strict_release_cache["value"]
+
+    release = _read_strict_release_manifest()
+    if sha256_file(model_path) != release["model_sha256"]:
+        raise HTTPException(status_code=503, detail="Strict model SHA-256 does not match release manifest")
+    if sha256_file(priors_path) != release["strategy_priors_sha256"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Strategy-prior SHA-256 does not match strict release manifest",
+        )
+    _strict_release_cache["key"] = key
+    _strict_release_cache["value"] = release
+    return release
+
+
+def _validate_artifact_against_release(
+    artifact: dict[str, Any],
+    release: dict[str, Any],
+) -> None:
+    if _canonical_json_sha256(artifact.get("features")) != release["feature_schema_sha256"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Strict artifact feature schema does not match release manifest",
+        )
+    if artifact.get("selected_regressor") != release.get("selected_regressor"):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict artifact selected regressor does not match release manifest",
+        )
+    artifact_calibration = artifact.get("calibration_sessions")
+    if artifact_calibration != release.get("calibration_sessions"):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict artifact calibration sessions do not match release manifest",
+        )
+    if artifact.get("sealed_test_session") != release.get("sealed_test_session"):
+        raise HTTPException(
+            status_code=503,
+            detail="Strict artifact sealed test session does not match release manifest",
+        )
+    if artifact.get("retrospective_stint_features_used") is not False:
+        raise HTTPException(
+            status_code=503,
+            detail="Strict artifact retrospective feature exclusion is invalid",
+        )
+    artifact_radii = artifact.get("conformal_radii_s")
+    release_radii = release.get("conformal_radii_s")
+    if not isinstance(artifact_radii, dict) or not isinstance(release_radii, dict):
+        raise HTTPException(status_code=503, detail="Strict artifact conformal evidence is missing")
+    for level in ("0.50", "0.80", "0.90", "0.95"):
+        try:
+            artifact_radius = float(artifact_radii[level])
+            release_radius = float(release_radii[level])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Strict artifact conformal evidence is malformed",
+            ) from exc
+        if not math.isclose(artifact_radius, release_radius, rel_tol=0.0, abs_tol=1e-12):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Strict artifact conformal radius {level} does not match release manifest",
+            )
+
+
 def _load_artifact() -> dict[str, Any] | None:
     path = _model_path()
     if not path.exists():
         return None
-    stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    release = _verify_strict_release_files()
+    key = (_file_signature(path), _strict_release_cache["key"])
     if _artifact_cache["key"] != key:
-        _artifact_cache["value"] = load_strict_artifact(path)
+        try:
+            artifact = load_strict_artifact(path)
+        except (OSError, ValueError, EOFError, TypeError) as exc:
+            raise HTTPException(status_code=503, detail="Strict pace artifact is unreadable") from exc
+        _validate_artifact_against_release(artifact, release)
+        _artifact_cache["value"] = artifact
         _artifact_cache["key"] = key
     return _artifact_cache["value"]
 
