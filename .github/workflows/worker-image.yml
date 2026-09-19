@@ -55,6 +55,10 @@ jobs:
           }
           assert "/models" not in targets, "compose must not shadow bundled /models evidence"
           assert "/models/lap-strict" in targets, "strict model mount must use /models/lap-strict"
+          environment = config["services"]["api"].get("environment", {})
+          assert environment.get("F1_STRICT_RELEASE_MANIFEST_PATH") == (
+              "/models/lap-strict/strict_release_manifest.json"
+          )
           PY
       - name: Build persistent worker image
         run: docker build -f Dockerfile.worker -t f1-race-worker:ci .
