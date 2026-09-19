@@ -35,7 +35,6 @@ _capture_process: subprocess.Popen[str] | None = None
 _capture_lock = threading.Lock()
 
 
-@app.get("/railway_healthz", include_in_schema=False)
 def _capture_runtime_status() -> dict[str, bool | str | int | None]:
     """Expose non-secret capture readiness for platform diagnostics."""
     with _capture_lock:

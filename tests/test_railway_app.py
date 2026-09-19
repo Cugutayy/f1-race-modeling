@@ -81,3 +81,8 @@ def test_capture_accepts_username_password_pair_and_uses_persistent_volume(monke
         "--session-key",
         "12345",
     ]
+
+
+def test_railway_health_route_registered_once():
+    routes = [route for route in railway_app.app.routes if getattr(route, "path", None) == "/railway_healthz"]
+    assert len(routes) == 1
