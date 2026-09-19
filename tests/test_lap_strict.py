@@ -5,7 +5,14 @@ import pandas as pd
 
 from f1_research.lap_intelligence import LapModelSpec, build_lap_dataset
 from f1_research.lap_mixture import attach_regime_labels
-from f1_research.lap_strict import STRICT_FEATURES, fit_strict_mixture, predict_live_strict
+from f1_research.lap_strict import (
+    BASELINE_MODE,
+    BASELINE_REGRESSOR,
+    RESIDUAL_MODE,
+    STRICT_FEATURES,
+    fit_strict_mixture,
+    predict_live_strict,
+)
 from f1_research.live_intelligence import combined_live_report
 from f1_research.strategy import SimulationConfig
 
@@ -106,8 +113,11 @@ def _live_state():
 def test_strict_artifact_excludes_retrospective_stint_features_and_has_baselines():
     datasets = [_dataset(501 + index, index * 7) for index in range(6)]
     artifact, metrics, audit = fit_strict_mixture(datasets, specs=_specs())
+    assert artifact["schema_version"] == 4
     assert artifact["task"] == "next_lap_strict_mixture"
     assert artifact["retrospective_stint_features_used"] is False
+    assert artifact["pace_prediction_mode"] in {BASELINE_MODE, RESIDUAL_MODE}
+    assert isinstance(artifact["baseline_guard"], dict)
     assert artifact["features"] == STRICT_FEATURES
     assert not {"compound", "tyre_age", "stint_number"} & set(artifact["features"])
     assert audit["feature_policy"] == "strict_asof_only"
@@ -126,6 +136,54 @@ def test_strict_artifact_excludes_retrospective_stint_features_and_has_baselines
     assert set(artifact["conformal_radii_s"]) == {"0.50", "0.80", "0.90", "0.95"}
     assert audit["calibration_sessions"] == artifact["calibration_sessions"]
     assert set(audit["sealed_test_coverage"]) == {"0.50", "0.80", "0.90", "0.95"}
+
+
+def test_strict_pace_is_invariant_to_cross_circuit_absolute_time_shift():
+    datasets = [_dataset(551 + index, index * 7) for index in range(6)]
+    shifted = [frame.copy() for frame in datasets]
+    for frame in shifted[1:]:
+        for column in ("target_s", "last_lap_s", "recent_median_3_s", "recent_median_5_s"):
+            frame[column] = frame[column] + 25.0
+
+    artifact, metrics, audit = fit_strict_mixture(shifted, specs=_specs())
+    predicted = predict_live_strict(
+        artifact,
+        {
+            **_live_state(),
+            "drivers": [
+                {
+                    **driver,
+                    "recent_laps_s": [value + 25.0 for value in driver["recent_laps_s"]],
+                    "last_lap_s": driver["last_lap_s"] + 25.0,
+                }
+                for driver in _live_state()["drivers"]
+            ],
+        },
+    )
+    assert artifact["schema_version"] == 4
+    assert artifact["pace_prediction_mode"] in {BASELINE_MODE, RESIDUAL_MODE}
+    assert predicted.predicted_green_lap_s.mean() > 108.0
+    row = metrics.iloc[0]
+    assert row.green_mae_s < 3.0
+    assert audit["baseline_guard"]["tuning_selected_mae_s"] <= (
+        audit["baseline_guard"]["tuning_baseline_mae_s"] * 1.01 + 1e-12
+    )
+
+
+def test_baseline_guard_rejects_challenger_that_cannot_beat_recent_median():
+    datasets = [_dataset(571 + index, index * 7) for index in range(6)]
+    tuning = datasets[1].copy()
+    green = tuning.lap_regime.eq("green") & tuning.target_valid
+    tuning.loc[green, "target_s"] = tuning.loc[green, "recent_median_5_s"]
+    datasets[1] = tuning
+
+    artifact, metrics, audit = fit_strict_mixture(datasets, specs=_specs())
+    assert artifact["selected_regressor"] == BASELINE_REGRESSOR
+    assert artifact["pace_prediction_mode"] == BASELINE_MODE
+    assert artifact["pace_regressor"] is None
+    assert artifact["baseline_guard"]["challenger_selected"] is False
+    assert audit["baseline_guard"]["tuning_baseline_mae_s"] == 0.0
+    assert metrics.iloc[0].challenger_selected == False  # noqa: E712
 
 
 def test_mutating_retrospective_stint_columns_cannot_change_strict_benchmark():
@@ -182,7 +240,12 @@ def test_strict_pace_drives_race_simulation_and_is_exposed_in_audit():
     assert len(report["pace_predictions"]) == 3
     assert report["pace_model"]["selected_regressor"] == artifact["selected_regressor"]
     assert report["pace_model"]["override_drivers"] == [1, 2, 3]
-    assert set(report["audit"]["pace_sources"].values()) == {"strict_next_lap_conformal"}
+    expected_source = (
+        "strict_residual_next_lap_conformal"
+        if artifact["pace_prediction_mode"] == RESIDUAL_MODE
+        else "strict_recent_median_baseline_conformal"
+    )
+    assert set(report["audit"]["pace_sources"].values()) == {expected_source}
     np.testing.assert_allclose(
         sum(row["win_probability"] for row in report["predictions"]),
         1.0,

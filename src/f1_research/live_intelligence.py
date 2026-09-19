@@ -9,7 +9,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from .lap_strict import STRICT_FEATURES, predict_live_strict
+from .lap_strict import BASELINE_MODE, RESIDUAL_MODE, STRICT_FEATURES, predict_live_strict
 from .reliability import reliability_overrides_from_state
 from .strategy import PaceOverride, SimulationConfig, compare_pit_windows, predict_from_state
 
@@ -18,12 +18,24 @@ def load_strict_artifact(path: Path) -> dict[str, Any]:
     artifact = joblib.load(path)
     if not isinstance(artifact, dict):
         raise ValueError("Strict pace artifact must be a dictionary")
+    if artifact.get("schema_version") != 4:
+        raise ValueError("Strict pace artifact schema is unsupported")
     if artifact.get("task") != "next_lap_strict_mixture":
         raise ValueError("Artifact is not a strict next-lap mixture")
     if artifact.get("features") != STRICT_FEATURES:
         raise ValueError("Strict pace feature schema mismatch")
     if artifact.get("retrospective_stint_features_used") is not False:
         raise ValueError("Strict artifact does not prove retrospective stint exclusion")
+    mode = artifact.get("pace_prediction_mode")
+    if mode not in {BASELINE_MODE, RESIDUAL_MODE}:
+        raise ValueError("Strict artifact pace prediction mode is unsupported")
+    baseline_guard = artifact.get("baseline_guard")
+    if not isinstance(baseline_guard, dict):
+        raise ValueError("Strict artifact is missing the baseline selection guard")
+    if mode == RESIDUAL_MODE and not hasattr(artifact.get("pace_regressor"), "predict"):
+        raise ValueError("Residual strict artifact is missing its pace regressor")
+    if mode == BASELINE_MODE and artifact.get("pace_regressor") is not None:
+        raise ValueError("Baseline strict artifact must not carry an active pace regressor")
     return artifact
 
 
@@ -46,10 +58,16 @@ def pace_overrides_from_frame(frame: pd.DataFrame, artifact: dict[str, Any]) -> 
         pace = float(row.predicted_green_lap_s)
         if not np.isfinite(pace) or pace <= 0:
             continue
+        mode = artifact.get("pace_prediction_mode")
+        source = (
+            "strict_residual_next_lap_conformal"
+            if mode == RESIDUAL_MODE
+            else "strict_recent_median_baseline_conformal"
+        )
         output[int(row.driver_number)] = PaceOverride(
             pace_s=pace,
             uncertainty_s=sigma,
-            source="strict_next_lap_conformal",
+            source=source,
         )
     return output
 

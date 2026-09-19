@@ -57,10 +57,20 @@ def test_strict_release_manifest_binds_model_priors_report_source_and_git(monkey
     )
 
     artifact = {
-        "schema_version": 3,
+        "schema_version": 4,
         "task": "next_lap_strict_mixture",
         "features": strict_pipeline.STRICT_FEATURES,
-        "selected_regressor": "extra_trees",
+        "selected_regressor": "recent_median_5_baseline",
+        "pace_prediction_mode": "recent_median_5_baseline",
+        "pace_regressor_target": "recent_median_5_s",
+        "pace_regressor": None,
+        "baseline_guard": {
+            "baseline": "recent_median_5_baseline",
+            "minimum_relative_improvement": 0.01,
+            "tuning_baseline_mae_s": 0.8,
+            "tuning_selected_mae_s": 0.8,
+            "challenger_selected": False,
+        },
         "calibration_sessions": [1003, 1004, 1005],
         "sealed_test_session": 1006,
         "conformal_nominal_coverage": 0.90,
@@ -119,6 +129,11 @@ def test_strict_release_manifest_binds_model_priors_report_source_and_git(monkey
 
     assert release["git_sha"] == git_sha
     assert release["evidence_kind"] == "strict_live_pace_release"
+    assert release["artifact_schema_version"] == 4
+    assert release["pace_prediction_mode"] == "recent_median_5_baseline"
+    assert release["baseline_guard"]["challenger_selected"] is False
+    assert release["validation_scope"] == "retrospective_historical_posthoc_diagnostic"
+    assert release["prospective_validation"] is False
     assert release["calibration_sessions"] == [1003, 1004, 1005]
     assert release["sealed_test_session"] == 1006
     assert release["sealed_test_session"] not in release["calibration_sessions"]
