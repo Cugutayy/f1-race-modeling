@@ -11,8 +11,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .data import validate
+from .data import survivorship_audit, validate
 from .features import FEATURES, build_features
+from .group_rankers import NativeGroupRanker, RankingSpec
 from .model import distribution, estimator, probability, score_event
 from .modern_models import candidate_specs, fit_selected, tune_forward_events
 from .plackett_luce import PlackettLuceRanker
@@ -177,7 +178,9 @@ def benchmark_v2(
     max_specs_per_model: int = 4,
     modern_selection_metric: str = "winner_log_loss",
     include_ensemble: bool = True,
+    native_ranker_names: tuple[str, ...] = (),
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    survivorship = survivorship_audit(frame)
     features = build_features(validate(frame))
     split = _split_blocks(features, test_events, tuning_events, calibration_events, min_fit_events)
     pre_cal_ids = split["fit"] + split["tuning"]
@@ -198,6 +201,11 @@ def benchmark_v2(
 
     pl_l2, pl_table = _tune_pl(pre_cal, tuning_events, min_fit_events)
     pl_model = PlackettLuceRanker(l2=pl_l2).fit(pre_cal)
+
+    native_rankers = {
+        name: NativeGroupRanker(RankingSpec(name, {})).fit(pre_cal)
+        for name in native_ranker_names
+    }
 
     ridge = estimator("ridge_rank").fit(
         pre_cal[FEATURES],
@@ -234,6 +242,8 @@ def benchmark_v2(
     }
     if include_ensemble:
         score_functions["rank_ensemble"] = ensemble_scores
+    for name, ranker in native_rankers.items():
+        score_functions[f"native::{name}"] = lambda event, ranker=ranker: ranker.predict(event)
 
     calibration_events_frames = [group for _, group in calibration.groupby("event_id", sort=True)]
     temperatures = {
@@ -289,6 +299,12 @@ def benchmark_v2(
         "temperatures": temperatures,
         "pl_optimization": pl_model.optimization_,
         "feature_schema": FEATURES,
+        "survivorship": survivorship,
+        "native_rankers": list(native_ranker_names),
+        "native_ranker_protocol": (
+            "fixed-hyperparameter group-aware ranking challengers fit only on pre-calibration history; "
+            "probability temperature estimated on the disjoint calibration block"
+        ),
         "test_updates_model": False,
         "selection_note": (
             "Tuning-block temperatures and ensemble weights compare candidates only; all final model "

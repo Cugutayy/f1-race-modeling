@@ -41,6 +41,7 @@ f1-api = "f1_research.scoped_live_api:main"
 f1-reconcile = "f1_research.provider_reconciliation:main"
 f1-production-check = "f1_research.production_check:main"
 f1-release = "f1_research.release:main"
+f1-backtest = "f1_research.walk_forward_pipeline:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
