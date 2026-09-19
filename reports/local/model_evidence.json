@@ -1,0 +1,547 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "retrospective_sealed_historical_benchmark",
+  "benchmark_run_id": "bfb27a2c32a1d39c",
+  "provider": "user-supplied; verify source manifest",
+  "years": null,
+  "protocol": "disjoint chronological fit -> tuning -> calibration -> sealed test",
+  "sealed_test_events": 12,
+  "sealed_test_event_ids": [
+    "2026-03",
+    "2026-04",
+    "2026-05",
+    "2026-06",
+    "2026-07",
+    "2026-08",
+    "2026-09",
+    "2026-10",
+    "2026-11",
+    "2026-12",
+    "2026-13",
+    "2026-14"
+  ],
+  "selected_modern": {
+    "name": "catboost",
+    "params": {
+      "depth": 6,
+      "random_strength": 1.5
+    }
+  },
+  "ensemble_weights": {
+    "modern": 0.25,
+    "pl": 0.25,
+    "qualifying": 0.5
+  },
+  "winner_calibration": [
+    {
+      "model": "modern::catboost",
+      "winner_ece": 0.018639275208002744,
+      "reliability": [
+        {
+          "bin": 0,
+          "count": 240,
+          "mean_probability": 0.003187234501231023,
+          "observed_rate": 0.008333333333333333
+        },
+        {
+          "bin": 1,
+          "count": 5,
+          "mean_probability": 0.147182595559393,
+          "observed_rate": 0.2
+        },
+        {
+          "bin": 2,
+          "count": 7,
+          "mean_probability": 0.2578836288966554,
+          "observed_rate": 0.2857142857142857
+        },
+        {
+          "bin": 4,
+          "count": 2,
+          "mean_probability": 0.4500808712209715,
+          "observed_rate": 0.5
+        },
+        {
+          "bin": 5,
+          "count": 3,
+          "mean_probability": 0.5671314772906696,
+          "observed_rate": 0.0
+        },
+        {
+          "bin": 6,
+          "count": 1,
+          "mean_probability": 0.6668416228402848,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 7,
+          "count": 1,
+          "mean_probability": 0.7675564477692289,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 8,
+          "count": 1,
+          "mean_probability": 0.8990211991231827,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 9,
+          "count": 4,
+          "mean_probability": 0.9397474738960881,
+          "observed_rate": 0.75
+        }
+      ]
+    },
+    {
+      "model": "plackett_luce_mle",
+      "winner_ece": 0.03472568317288972,
+      "reliability": [
+        {
+          "bin": 0,
+          "count": 248,
+          "mean_probability": 0.00039466526868548124,
+          "observed_rate": 0.016129032258064516
+        },
+        {
+          "bin": 2,
+          "count": 3,
+          "mean_probability": 0.24518420485607853,
+          "observed_rate": 0.3333333333333333
+        },
+        {
+          "bin": 4,
+          "count": 1,
+          "mean_probability": 0.4172197800165219,
+          "observed_rate": 0.0
+        },
+        {
+          "bin": 5,
+          "count": 1,
+          "mean_probability": 0.5827802199763226,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 7,
+          "count": 3,
+          "mean_probability": 0.7326511707434933,
+          "observed_rate": 0.3333333333333333
+        },
+        {
+          "bin": 9,
+          "count": 8,
+          "mean_probability": 0.9960771108218052,
+          "observed_rate": 0.625
+        }
+      ]
+    },
+    {
+      "model": "qualifying_order",
+      "winner_ece": 0.009380245252352091,
+      "reliability": [
+        {
+          "bin": 0,
+          "count": 240,
+          "mean_probability": 0.006448079579265636,
+          "observed_rate": 0.004166666666666667
+        },
+        {
+          "bin": 2,
+          "count": 12,
+          "mean_probability": 0.2301506355574602,
+          "observed_rate": 0.3333333333333333
+        },
+        {
+          "bin": 6,
+          "count": 12,
+          "mean_probability": 0.6408877728572269,
+          "observed_rate": 0.5833333333333334
+        }
+      ]
+    },
+    {
+      "model": "rank_ensemble",
+      "winner_ece": 0.027173799250953146,
+      "reliability": [
+        {
+          "bin": 0,
+          "count": 245,
+          "mean_probability": 0.0017195606842901289,
+          "observed_rate": 0.012244897959183673
+        },
+        {
+          "bin": 1,
+          "count": 4,
+          "mean_probability": 0.10500348458902142,
+          "observed_rate": 0.0
+        },
+        {
+          "bin": 2,
+          "count": 2,
+          "mean_probability": 0.2491419482457543,
+          "observed_rate": 0.5
+        },
+        {
+          "bin": 4,
+          "count": 2,
+          "mean_probability": 0.488932062006389,
+          "observed_rate": 0.5
+        },
+        {
+          "bin": 7,
+          "count": 2,
+          "mean_probability": 0.7208017814419811,
+          "observed_rate": 0.5
+        },
+        {
+          "bin": 8,
+          "count": 4,
+          "mean_probability": 0.8789045276797041,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 9,
+          "count": 5,
+          "mean_probability": 0.9450647999771535,
+          "observed_rate": 0.4
+        }
+      ]
+    },
+    {
+      "model": "recent_form",
+      "winner_ece": 0.03422553147442017,
+      "reliability": [
+        {
+          "bin": 0,
+          "count": 227,
+          "mean_probability": 0.009476695406033367,
+          "observed_rate": 0.01762114537444934
+        },
+        {
+          "bin": 1,
+          "count": 16,
+          "mean_probability": 0.14579615160659,
+          "observed_rate": 0.25
+        },
+        {
+          "bin": 2,
+          "count": 10,
+          "mean_probability": 0.23427938142195748,
+          "observed_rate": 0.3
+        },
+        {
+          "bin": 3,
+          "count": 5,
+          "mean_probability": 0.37155917366276375,
+          "observed_rate": 0.0
+        },
+        {
+          "bin": 4,
+          "count": 3,
+          "mean_probability": 0.4502457871599506,
+          "observed_rate": 0.0
+        },
+        {
+          "bin": 5,
+          "count": 1,
+          "mean_probability": 0.5676804611453867,
+          "observed_rate": 0.0
+        },
+        {
+          "bin": 6,
+          "count": 1,
+          "mean_probability": 0.6554877482819478,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 7,
+          "count": 1,
+          "mean_probability": 0.7415564636844053,
+          "observed_rate": 0.0
+        }
+      ]
+    },
+    {
+      "model": "ridge_rank",
+      "winner_ece": 0.025422513735231494,
+      "reliability": [
+        {
+          "bin": 0,
+          "count": 242,
+          "mean_probability": 0.0032628791453082257,
+          "observed_rate": 0.008264462809917356
+        },
+        {
+          "bin": 1,
+          "count": 4,
+          "mean_probability": 0.14017298441722648,
+          "observed_rate": 0.25
+        },
+        {
+          "bin": 2,
+          "count": 2,
+          "mean_probability": 0.25529174643474895,
+          "observed_rate": 0.0
+        },
+        {
+          "bin": 3,
+          "count": 1,
+          "mean_probability": 0.3280135726695191,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 4,
+          "count": 4,
+          "mean_probability": 0.45609199260050903,
+          "observed_rate": 0.25
+        },
+        {
+          "bin": 5,
+          "count": 2,
+          "mean_probability": 0.5116891498909553,
+          "observed_rate": 1.0
+        },
+        {
+          "bin": 6,
+          "count": 4,
+          "mean_probability": 0.6617697089926748,
+          "observed_rate": 0.5
+        },
+        {
+          "bin": 8,
+          "count": 4,
+          "mean_probability": 0.8434353784520809,
+          "observed_rate": 0.5
+        },
+        {
+          "bin": 9,
+          "count": 1,
+          "mean_probability": 0.9425276236645161,
+          "observed_rate": 1.0
+        }
+      ]
+    }
+  ],
+  "models": [
+    {
+      "model": "rank_ensemble",
+      "position_mae": 3.1742424242424243,
+      "winner_log_loss": 1.5087757229240408,
+      "winner_brier": 0.6153222242021504,
+      "winner_accuracy": 0.6666666666666666,
+      "podium_recall": 0.6388888888888888,
+      "spearman_rank": 0.7044042913608132,
+      "kendall_rank": 0.5974025974025974,
+      "ndcg": 0.9465191351682333
+    },
+    {
+      "model": "modern::catboost",
+      "position_mae": 3.4621212121212124,
+      "winner_log_loss": 1.2963168317720328,
+      "winner_brier": 0.5644002775775832,
+      "winner_accuracy": 0.5833333333333334,
+      "podium_recall": 0.611111111111111,
+      "spearman_rank": 0.6733483907396952,
+      "kendall_rank": 0.5555555555555555,
+      "ndcg": 0.9441671334332389
+    },
+    {
+      "model": "qualifying_order",
+      "position_mae": 3.1363636363636362,
+      "winner_log_loss": 1.2983345258146353,
+      "winner_brier": 0.5701835726912302,
+      "winner_accuracy": 0.5833333333333334,
+      "podium_recall": 0.5833333333333334,
+      "spearman_rank": 0.7088274044795785,
+      "kendall_rank": 0.601010101010101,
+      "ndcg": 0.9445440404877964
+    },
+    {
+      "model": "ridge_rank",
+      "position_mae": 3.21969696969697,
+      "winner_log_loss": 1.2553498483403478,
+      "winner_brier": 0.6075114688766076,
+      "winner_accuracy": 0.6666666666666666,
+      "podium_recall": 0.6388888888888888,
+      "spearman_rank": 0.6948993035949558,
+      "kendall_rank": 0.5909090909090909,
+      "ndcg": 0.9446148504386708
+    },
+    {
+      "model": "plackett_luce_mle",
+      "position_mae": 3.227272727272727,
+      "winner_log_loss": 4.461244657921509,
+      "winner_brier": 0.759269276371877,
+      "winner_accuracy": 0.5833333333333334,
+      "podium_recall": 0.6666666666666666,
+      "spearman_rank": 0.6947110860154339,
+      "kendall_rank": 0.5988455988455988,
+      "ndcg": 0.9497642798090139
+    },
+    {
+      "model": "recent_form",
+      "position_mae": 4.174242424242425,
+      "winner_log_loss": 2.2643898351696836,
+      "winner_brier": 0.9568427099935296,
+      "winner_accuracy": 0.08333333333333333,
+      "podium_recall": 0.3055555555555555,
+      "spearman_rank": 0.5872388481084134,
+      "kendall_rank": 0.4567099567099567,
+      "ndcg": 0.9153196356073193
+    }
+  ],
+  "uncertainty": {
+    "baseline": "qualifying_order",
+    "bootstrap_samples": 10000,
+    "unit": "whole race event",
+    "paired_vs_baseline": {
+      "modern::catboost": {
+        "position_mae": {
+          "mean_difference_model_minus_baseline": 0.3257575757575758,
+          "interval_95": [
+            0.08333333333333344,
+            0.5757575757575758
+          ],
+          "events": 12,
+          "model_better_events": 2,
+          "baseline_better_events": 8,
+          "ties": 2,
+          "bootstrap_fraction_favorable": 0.0031,
+          "direction": "lower"
+        },
+        "winner_log_loss": {
+          "mean_difference_model_minus_baseline": -0.0020176940426021583,
+          "interval_95": [
+            -0.49443094370813334,
+            0.5688681666324626
+          ],
+          "events": 12,
+          "model_better_events": 9,
+          "baseline_better_events": 3,
+          "ties": 0,
+          "bootstrap_fraction_favorable": 0.5244,
+          "direction": "lower"
+        }
+      },
+      "plackett_luce_mle": {
+        "position_mae": {
+          "mean_difference_model_minus_baseline": 0.09090909090909083,
+          "interval_95": [
+            -0.11363636363636372,
+            0.31818181818181795
+          ],
+          "events": 12,
+          "model_better_events": 5,
+          "baseline_better_events": 6,
+          "ties": 1,
+          "bootstrap_fraction_favorable": 0.2152,
+          "direction": "lower"
+        },
+        "winner_log_loss": {
+          "mean_difference_model_minus_baseline": 3.1629101321068736,
+          "interval_95": [
+            -0.061696374746745754,
+            7.954200410071471
+          ],
+          "events": 12,
+          "model_better_events": 7,
+          "baseline_better_events": 5,
+          "ties": 0,
+          "bootstrap_fraction_favorable": 0.0307,
+          "direction": "lower"
+        }
+      },
+      "rank_ensemble": {
+        "position_mae": {
+          "mean_difference_model_minus_baseline": 0.037878787878787824,
+          "interval_95": [
+            -0.05303030303030306,
+            0.13636363636363635
+          ],
+          "events": 12,
+          "model_better_events": 4,
+          "baseline_better_events": 6,
+          "ties": 2,
+          "bootstrap_fraction_favorable": 0.2437,
+          "direction": "lower"
+        },
+        "winner_log_loss": {
+          "mean_difference_model_minus_baseline": 0.21044119710940593,
+          "interval_95": [
+            -0.28432379235039157,
+            0.8044475276941729
+          ],
+          "events": 12,
+          "model_better_events": 9,
+          "baseline_better_events": 3,
+          "ties": 0,
+          "bootstrap_fraction_favorable": 0.2327,
+          "direction": "lower"
+        }
+      },
+      "recent_form": {
+        "position_mae": {
+          "mean_difference_model_minus_baseline": 1.0378787878787876,
+          "interval_95": [
+            0.7272727272727272,
+            1.378787878787879
+          ],
+          "events": 12,
+          "model_better_events": 0,
+          "baseline_better_events": 12,
+          "ties": 0,
+          "bootstrap_fraction_favorable": 0.0,
+          "direction": "lower"
+        },
+        "winner_log_loss": {
+          "mean_difference_model_minus_baseline": 0.9660553093550485,
+          "interval_95": [
+            -0.33994624340730795,
+            2.0315949604460877
+          ],
+          "events": 12,
+          "model_better_events": 2,
+          "baseline_better_events": 10,
+          "ties": 0,
+          "bootstrap_fraction_favorable": 0.0683,
+          "direction": "lower"
+        }
+      },
+      "ridge_rank": {
+        "position_mae": {
+          "mean_difference_model_minus_baseline": 0.08333333333333333,
+          "interval_95": [
+            -0.11363636363636376,
+            0.3257575757575758
+          ],
+          "events": 12,
+          "model_better_events": 4,
+          "baseline_better_events": 7,
+          "ties": 1,
+          "bootstrap_fraction_favorable": 0.239,
+          "direction": "lower"
+        },
+        "winner_log_loss": {
+          "mean_difference_model_minus_baseline": -0.042984677474287226,
+          "interval_95": [
+            -0.5998168356185822,
+            0.6258236582996364
+          ],
+          "events": 12,
+          "model_better_events": 6,
+          "baseline_better_events": 6,
+          "ties": 0,
+          "bootstrap_fraction_favorable": 0.5736,
+          "direction": "lower"
+        }
+      }
+    },
+    "interpretation": "Paired differences are model minus baseline on the same held-out races. Negative favors the model for lower-is-better metrics; positive favors the model for higher-is-better metrics. Intervals are descriptive event bootstrap intervals."
+  },
+  "limitations": [
+    "Retrospective sealed historical evidence is not a prospective performance guarantee.",
+    "The sealed test block was not used for model, hyperparameter, ensemble-weight or temperature selection.",
+    "Public F1 data omits private team telemetry, fuel load, setup and internal tyre-state variables.",
+    "Event-bootstrap intervals describe uncertainty across the held-out races and are not an iid significance test."
+  ]
+}

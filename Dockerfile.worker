@@ -2,12 +2,14 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    F1_MODEL_EVIDENCE_PATH=/models/model_evidence.json
 
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY reports/local/model_evidence.json /models/model_evidence.json
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir ".[live,api]" \
