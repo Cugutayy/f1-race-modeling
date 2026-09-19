@@ -36,9 +36,26 @@ _capture_lock = threading.Lock()
 
 
 @app.get("/railway_healthz", include_in_schema=False)
-def railway_healthz() -> dict[str, bool]:
-    """Return process liveness only; do not expose race state or credentials."""
-    return {"ok": True}
+def _capture_runtime_status() -> dict[str, bool | str | int | None]:
+    """Expose non-secret capture readiness for platform diagnostics."""
+    with _capture_lock:
+        process = _capture_process
+    credentials = _has_openf1_credentials()
+    enabled = _capture_autostart_enabled()
+    running = bool(process is not None and process.poll() is None)
+    return {
+        "credentials_configured": credentials,
+        "autostart_enabled": enabled,
+        "supervisor_running": bool(_capture_thread is not None and _capture_thread.is_alive()),
+        "capture_process_running": running,
+        "capture_exit_code": None if process is None or running else process.poll(),
+    }
+
+
+@app.get("/railway_healthz", include_in_schema=False)
+def railway_healthz() -> dict[str, object]:
+    """Return process liveness plus non-secret capture readiness."""
+    return {"ok": True, "capture": _capture_runtime_status()}
 
 
 def _has_openf1_credentials() -> bool:
@@ -154,6 +171,11 @@ def _stop_capture_supervisor() -> None:
 def main() -> None:
     """Run the Railway wrapper and supervise capture for the server lifetime."""
     import uvicorn
+
+    logging.basicConfig(
+        level=os.environ.get("F1_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
     host = os.environ.get("F1_API_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", os.environ.get("F1_API_PORT", "8000")))
