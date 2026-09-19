@@ -115,6 +115,8 @@ def collect(years, cache, offline=False):
                     "grid_position": float(result["grid"]),
                     "finish_position": float(result["position"]),
                     "points": float(result["points"]),
+                    "status": str(result["status"]),
+                    "starter_count": len(race["Results"]),
                     "dnf": int(not (result["status"] == "Finished"
                                     or result["status"].startswith("+"))),
                 })
@@ -160,4 +162,49 @@ def validate(frame):
             raise ValueError(f"Invalid qualifying feature: {col}")
     if (df["points"] < 0).any():
         raise ValueError("Negative points")
+    if "starter_count" in df:
+        df["starter_count"] = pd.to_numeric(df["starter_count"], errors="raise")
+        if (
+            ~np.isfinite(df["starter_count"])
+            | (df["starter_count"] < 2)
+            | ~df["starter_count"].mod(1).eq(0)
+        ).any():
+            raise ValueError("Invalid starter_count")
+        for event_id, group in df.groupby("event_id"):
+            expected = group["starter_count"].unique()
+            if len(expected) != 1 or len(group) != int(expected[0]):
+                raise ValueError(
+                    f"Survivorship guard failed for {event_id}: "
+                    f"retained {len(group)} of {expected.tolist()} source starters"
+                )
+    if "status" in df and (
+        df["status"].isna().any() | df["status"].astype(str).str.strip().eq("").any()
+    ):
+        raise ValueError("Missing result status")
     return df.sort_values(["date", "event_id", "driver"]).reset_index(drop=True)
+
+
+def survivorship_audit(frame: pd.DataFrame) -> dict:
+    """Describe whether all source result entrants survived downstream filtering."""
+    df = validate(frame)
+    verified = "starter_count" in df
+    event_rows = []
+    for event_id, group in df.groupby("event_id", sort=True):
+        expected = int(group["starter_count"].iloc[0]) if verified else None
+        event_rows.append({
+            "event_id": str(event_id),
+            "retained_entrants": int(len(group)),
+            "source_starters": expected,
+            "dnf_rows": int(group["dnf"].sum()),
+            "complete": bool(expected == len(group)) if verified else None,
+        })
+    return {
+        "starter_count_verified": verified,
+        "events": len(event_rows),
+        "entrants": int(len(df)),
+        "dnf_rows": int(df["dnf"].sum()),
+        "all_source_starters_retained": (
+            all(row["complete"] for row in event_rows) if verified else None
+        ),
+        "event_counts": event_rows,
+    }
