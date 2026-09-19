@@ -21,6 +21,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from .pace_history import pace_duration_is_plausible, rain_state, same_rain_regime
 from .value_parsing import strict_optional_bool
 
 NUMERIC_FEATURES = [
@@ -198,15 +199,23 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
     if not pits.empty:
         pits["pit_time"] = _times(pits, "date")
         pits["driver_number"] = _numeric(pits, "driver_number")
+        pits["lap_number"] = _numeric(pits, "lap_number")
     rows: list[dict[str, Any]] = []
     for driver, group in laps.sort_values(["start", "driver_number", "lap_number"]).groupby("driver_number"):
-        completed: list[tuple[pd.Timestamp, float]] = []
+        # Store only pace-eligible completed laps. Raw provider rows remain in the source
+        # snapshots/manifests, so this filtering affects model features but not audit truth.
+        completed: list[tuple[pd.Timestamp, float, bool | None, int]] = []
         for _, lap in group.sort_values("start").iterrows():
             start = lap.start
             if pd.isna(start):
                 continue
-            usable = [(available, duration) for available, duration in completed if available <= start]
-            values = np.asarray([duration for _, duration in usable[-5:]], dtype=float)
+            current_rain = rain_state(lap.get("rainfall"))
+            usable = [
+                (available, duration, previous_rain, previous_lap)
+                for available, duration, previous_rain, previous_lap in completed
+                if available <= start and same_rain_regime(previous_rain, current_rain)
+            ]
+            values = np.asarray([duration for _, duration, _, _ in usable[-5:]], dtype=float)
             if len(values) >= minimum_history:
                 last = float(values[-1])
                 recent3 = values[-3:]
@@ -216,7 +225,7 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
                 pit_count = 0
                 if not pits.empty:
                     pit_count = int(((pits.driver_number == driver) & (pits.pit_time <= start)).sum())
-                source_times = [available for available, _ in usable[-5:]]
+                source_times = [available for available, _, _, _ in usable[-5:]]
                 for field in ("weather_available_at", "race_control_available_at"):
                     value = lap.get(field)
                     if pd.notna(value):
@@ -240,10 +249,44 @@ def build_lap_dataset(lap_rows: list[dict[str, Any]], *,
                     "track_temperature_c": lap.track_temperature_c,
                     "humidity_pct": lap.humidity_pct, "rainfall": lap.rainfall,
                     "safety_car_active": lap.safety_car_active, "yellow_recent": lap.yellow_recent,
+                    "pace_history_policy": (
+                        "event_time_nonpit_nonneutralized_same_rain_slow_outlier_guard"
+                    ),
                     "stint_feature_provenance": "historical_rest_no_publication_timestamp",
                 })
-            if lap.target_valid:
-                completed.append((lap.target_available_at, float(lap.target_s)))
+
+            if not lap.target_valid or pd.isna(lap.target_available_at):
+                continue
+            pit_out = None if pd.isna(lap.is_pit_out_lap) else bool(lap.is_pit_out_lap)
+            known_pit_lap = False
+            if not pits.empty:
+                pit_mask = (
+                    (pits.driver_number == driver)
+                    & (pits.lap_number == lap.lap_number)
+                    & pits.pit_time.notna()
+                    & (pits.pit_time <= lap.target_available_at)
+                )
+                known_pit_lap = bool(pit_mask.any())
+            neutralized = float(lap.get("safety_car_active") or 0.0) > 0.0
+            same_regime_history = [
+                duration
+                for available, duration, previous_rain, _ in completed
+                if available <= lap.target_available_at
+                and same_rain_regime(previous_rain, current_rain)
+            ]
+            duration = float(lap.target_s)
+            if (
+                pit_out is False
+                and not known_pit_lap
+                and not neutralized
+                and pace_duration_is_plausible(duration, same_regime_history)
+            ):
+                completed.append((
+                    lap.target_available_at,
+                    duration,
+                    current_rain,
+                    int(lap.lap_number),
+                ))
     result = pd.DataFrame(rows)
     if result.empty:
         return result
@@ -378,8 +421,13 @@ def live_feature_rows(snapshot: dict[str, Any]) -> pd.DataFrame:
     weather = snapshot.get("weather") or {}
     rows = []
     for driver in snapshot.get("drivers", []):
-        history = np.asarray(driver.get("recent_laps_s") or [], dtype=float)
-        history = history[np.isfinite(history)]
+        history_source = (
+            driver.get("pace_laps_s")
+            if "pace_laps_s" in driver
+            else driver.get("recent_laps_s")
+        )
+        history = np.asarray(history_source or [], dtype=float)
+        history = history[np.isfinite(history) & (history > 0)]
         if len(history) < 3:
             continue
         recent3, recent5 = history[-3:], history[-5:]

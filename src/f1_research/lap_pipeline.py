@@ -125,6 +125,9 @@ def collect_session(
             str(key): int(value) for key, value in dataset.lap_regime.value_counts().items()
         },
         "dataset_sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
+        "pace_history_policy": (
+            "event_time_nonpit_nonneutralized_same_rain_slow_outlier_guard"
+        ),
         "sources": sources,
         "limitations": [
             "OpenF1 date_start is approximate and target availability adds an explicit simulated latency.",

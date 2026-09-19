@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from .data_truth import parse_provider_timestamp
+from .pace_history import pace_duration_is_plausible, rain_state, track_state_is_pace_eligible
 from .race_control import TrackState, reduce_race_control
 
 _LAP_DEFICIT_RE = re.compile(r"^\+?\s*(\d+)\s+LAPS?$", re.IGNORECASE)
@@ -110,6 +111,9 @@ class DriverState:
     topic_times: dict[str, str] = field(default_factory=dict)
     recent_laps_s: list[float] = field(default_factory=list)
     recent_lap_numbers: list[int] = field(default_factory=list)
+    pace_laps_s: list[float] = field(default_factory=list)
+    pace_lap_numbers: list[int] = field(default_factory=list)
+    pace_rainfall: bool | None = None
 
     def remember_lap(self, lap: int | None, duration: float, keep: int = 8) -> None:
         if not np.isfinite(duration) or duration <= 0:
@@ -122,6 +126,53 @@ class DriverState:
         self.recent_lap_numbers.append(lap if lap is not None else -1)
         self.recent_laps_s = self.recent_laps_s[-keep:]
         self.recent_lap_numbers = self.recent_lap_numbers[-keep:]
+
+    def remember_pace_lap(
+        self,
+        lap: int | None,
+        duration: float,
+        *,
+        rainfall: Any = None,
+        keep: int = 8,
+    ) -> bool:
+        current_rain = rain_state(rainfall)
+        if (
+            current_rain is not None
+            and self.pace_rainfall is not None
+            and current_rain != self.pace_rainfall
+        ):
+            self.pace_laps_s.clear()
+            self.pace_lap_numbers.clear()
+        if current_rain is not None:
+            self.pace_rainfall = current_rain
+
+        lap_key = lap if lap is not None else -1
+        existing = self.pace_lap_numbers.index(lap_key) if lap_key in self.pace_lap_numbers else None
+        reference = [
+            value
+            for index, value in enumerate(self.pace_laps_s)
+            if existing is None or index != existing
+        ]
+        if not pace_duration_is_plausible(duration, reference):
+            if existing is not None:
+                self.pace_lap_numbers.pop(existing)
+                self.pace_laps_s.pop(existing)
+            return False
+        if existing is not None:
+            self.pace_laps_s[existing] = float(duration)
+            return True
+        self.pace_laps_s.append(float(duration))
+        self.pace_lap_numbers.append(lap_key)
+        self.pace_laps_s = self.pace_laps_s[-keep:]
+        self.pace_lap_numbers = self.pace_lap_numbers[-keep:]
+        return True
+
+    def forget_pace_lap(self, lap: int | None) -> None:
+        if lap is None or lap not in self.pace_lap_numbers:
+            return
+        index = self.pace_lap_numbers.index(lap)
+        self.pace_lap_numbers.pop(index)
+        self.pace_laps_s.pop(index)
 
 
 @dataclass
@@ -286,8 +337,20 @@ class RaceStateStore:
             driver.sector_1_s = _finite(payload.get("duration_sector_1"))
             driver.sector_2_s = _finite(payload.get("duration_sector_2"))
             driver.sector_3_s = _finite(payload.get("duration_sector_3"))
-            if duration is not None and not _optional_bool(payload.get("is_pit_out_lap")):
+            pit_out = _optional_bool(payload.get("is_pit_out_lap"))
+            if duration is not None and pit_out is not True:
                 driver.remember_lap(lap, duration)
+            if (
+                duration is not None
+                and pit_out is False
+                and lap != driver.last_pit_lap
+                and track_state_is_pace_eligible(self.state.track_state)
+            ):
+                driver.remember_pace_lap(
+                    lap,
+                    duration,
+                    rainfall=self.state.weather.rainfall,
+                )
         elif topic == "stints" and driver_number is not None:
             driver = self.state.driver(driver_number)
             driver.compound = payload.get("compound") or driver.compound
@@ -303,6 +366,7 @@ class RaceStateStore:
             if pit_lap is not None and pit_lap != driver.last_pit_lap:
                 driver.pit_stops += 1
                 driver.last_pit_lap = pit_lap
+            driver.forget_pace_lap(pit_lap)
         elif topic == "car_data" and driver_number is not None:
             driver = self.state.driver(driver_number)
             driver.speed_kmh = _finite(payload.get("speed"))

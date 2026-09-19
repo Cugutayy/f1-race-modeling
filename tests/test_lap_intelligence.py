@@ -58,9 +58,12 @@ def test_lap_dataset_respects_cutoff_and_enriches_state():
     assert frame.tyre_age.notna().all()
     assert frame.track_temperature_c.eq(38.0).all()
     assert frame.stint_feature_provenance.eq("historical_rest_no_publication_timestamp").all()
+    assert frame.pace_history_policy.eq(
+        "event_time_nonpit_nonneutralized_same_rain_slow_outlier_guard"
+    ).all()
 
 
-def test_latency_does_not_permanently_drop_a_previous_lap():
+def test_slow_available_restart_lap_remains_truth_but_not_pace_history():
     base = datetime(2026, 1, 1, 12, tzinfo=UTC)
     rows = []
     starts = [0, 100, 200, 250, 400, 500, 600]
@@ -70,15 +73,18 @@ def test_latency_does_not_permanently_drop_a_previous_lap():
                      "date_start": (base + timedelta(seconds=offset)).isoformat(),
                      "lap_duration": duration, "is_pit_out_lap": False})
     frame = build_lap_dataset(rows, latency_s=1.0, minimum_history=1)
-    # Lap 4 is unavailable at lap 5 start (250 + 200 + 1 > 400),
-    # but it is available by lap 6 start and must not have been discarded.
+
+    # The 200s target remains in the historical truth table. Once it becomes available,
+    # the model-specific pace buffer rejects it as an extreme slow outlier instead of
+    # poisoning subsequent green-pace features.
+    lap4 = frame[frame.lap_number == 4].iloc[0]
     lap5 = frame[frame.lap_number == 5].iloc[0]
     lap6 = frame[frame.lap_number == 6].iloc[0]
+    assert lap4.target_s == 200
     assert lap5.last_lap_s == 90
-    assert lap5.recent_variability_s < 1
     assert lap6.last_lap_s == 90
     assert lap6.recent_median_3_s == 90
-    assert lap6.recent_variability_s > 40
+    assert lap6.recent_variability_s < 1
     assert pd.Timestamp(base + timedelta(seconds=451)) <= lap6.forecast_at
 
 
@@ -97,7 +103,7 @@ def test_modern_lap_benchmark_is_whole_session_and_finite():
     assert audit["selected_model"] == "hist_gradient_boosting"
 
 
-def test_live_feature_rows_match_training_schema():
+def test_live_feature_rows_match_training_schema_and_prefer_clean_pace_history():
     state = {
         "current_lap": 20,
         "flag": "GREEN",
@@ -105,7 +111,8 @@ def test_live_feature_rows_match_training_schema():
         "weather": {"air_temperature_c": 24.0, "track_temperature_c": 35.0,
                     "humidity_pct": 55.0, "rainfall": False},
         "drivers": [{"driver_number": 1, "lap_number": 20,
-                     "recent_laps_s": [90.2, 90.1, 90.0, 90.05],
+                     "recent_laps_s": [90.2, 180.0, 90.1, 90.0, 90.05],
+                     "pace_laps_s": [90.2, 90.1, 90.0, 90.05],
                      "compound": "MEDIUM", "tyre_age": 12, "stint_number": 1,
                      "pit_stops": 0}],
     }
@@ -113,7 +120,8 @@ def test_live_feature_rows_match_training_schema():
     assert len(frame) == 1
     assert frame.iloc[0].lap_number == 21
     assert frame.iloc[0].compound == "MEDIUM"
-    assert np.isfinite(frame.iloc[0].recent_median_5_s)
+    assert frame.iloc[0].recent_median_5_s < 91.0
+    assert frame.iloc[0].last_lap_s == 90.05
 
 
 def test_lap_dataset_parses_string_false_without_python_truthiness():
