@@ -25,6 +25,7 @@ services:
       F1_LIVE_MANIFEST_PATH: /data/live/manifest.json
       F1_STRICT_MODEL_PATH: /models/lap-strict/next_lap_strict.joblib
       F1_STRATEGY_PRIORS_PATH: /models/lap-strict/strategy_priors.json
+      F1_STRICT_RELEASE_MANIFEST_PATH: /models/lap-strict/strict_release_manifest.json
       F1_MODEL_EVIDENCE_PATH: /models/model_evidence.json
       F1_PREDICTION_LEDGER_PATH: /data/predictions/predictions.jsonl
     volumes:
