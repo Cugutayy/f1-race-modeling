@@ -1,4 +1,4 @@
-production-v6
-purpose=same-revision-data-replay-model-strict-live-evidence
-reason=verify-provenance-multi-event-conformal-and-strict-live-release
-source_head=3e95099ac3c5d7111dfe6d69ca6f15a9d3a81dbd
+production-v7
+purpose=schema4-strict-live-production-release
+reason=rerun-strict-live-after-residual-baseline-guard-and-pace-history-filter
+source_head=ccfe906a7a673a92a362245bb399e55bb1ff5dc6
