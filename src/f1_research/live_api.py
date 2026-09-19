@@ -631,6 +631,7 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
     model_path = _model_path()
     priors_path = _priors_path()
     evidence_path = _evidence_path()
+    strict_release_path = _strict_release_manifest_path()
     state = _read_state() if state_path.exists() else {}
     manifest = _read_capture_manifest()
     stream = manifest.get("stream") if isinstance(manifest.get("stream"), dict) else {}
@@ -649,6 +650,17 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
             trusted_live_ready = True
         except HTTPException as exc:
             trusted_live_error = str(exc.detail)
+
+    strict_release_verified = False
+    strict_release_error = None
+    strict_release = None
+    if model_path.exists():
+        try:
+            strict_release = _strict_release_metadata()
+            strict_release_verified = bool(strict_release.get("verified"))
+        except HTTPException as exc:
+            strict_release_error = str(exc.detail)
+
     quality = classify_live_quality(state_age_s=_state_age_s(state), provider_age_s=_age_s(state.get("latest_provider_event_at")), connection_state=connection_state, max_age_s=_max_live_age_s())
     return JSONResponse(_safe({
         "ok": state_path.exists(),
@@ -659,6 +671,12 @@ def healthz(_: None = Depends(_authorize)) -> JSONResponse:
         "provider_event_age_s": _age_s(state.get("latest_provider_event_at")),
         "strict_model": model_path.exists(),
         "strategy_priors": priors_path.exists(),
+        "strict_release_manifest": strict_release_path.exists(),
+        "strict_release_verified": strict_release_verified,
+        "strict_release_error": strict_release_error,
+        "strict_release_git_sha": (
+            strict_release.get("git_sha") if isinstance(strict_release, dict) else None
+        ),
         "model_evidence": evidence_path.exists(),
         "session_key": state.get("session_key"),
         "current_lap": state.get("current_lap"),
@@ -685,8 +703,15 @@ def readyz(_: None = Depends(_authorize)) -> JSONResponse:
     state = _read_state()
     truth = _trusted_live_audit(state)
     missing = []
-    if _load_artifact() is None:
-        missing.append("strict_model")
+    strict_release = None
+    try:
+        artifact = _load_artifact()
+        if artifact is None:
+            missing.append("strict_model")
+        else:
+            strict_release = _strict_release_metadata()
+    except HTTPException:
+        missing.append("strict_release_contract")
     if not _priors_path().exists():
         missing.append("strategy_priors")
     try:
@@ -695,12 +720,13 @@ def readyz(_: None = Depends(_authorize)) -> JSONResponse:
         missing.append("model_evidence")
         evidence = None
     if missing:
-        raise HTTPException(status_code=503, detail={"missing": missing})
+        raise HTTPException(status_code=503, detail={"missing": sorted(set(missing))})
     return JSONResponse(_safe({
         "ready": True,
         "session_key": state.get("session_key"),
         "current_lap": state.get("current_lap"),
         "data_truth": truth,
+        "strict_release": strict_release,
         "model_evidence_run": evidence.get("benchmark_run_id") if isinstance(evidence, dict) else None,
     }))
 
@@ -732,17 +758,21 @@ def modelz(_: None = Depends(_authorize)) -> JSONResponse:
     artifact = _load_artifact()
     if artifact is None:
         raise HTTPException(status_code=503, detail="Strict live pace model is unavailable")
+    strict_release = _strict_release_metadata()
     evidence = _read_model_evidence()
     return JSONResponse(_safe({
         "ready": True,
         "live_pace_model": {
             "artifact_schema_version": artifact.get("schema_version") if isinstance(artifact, dict) else None,
+            "selected_regressor": artifact.get("selected_regressor") if isinstance(artifact, dict) else None,
             "evidence_scope": "strict live pace artifact; separate from race-outcome benchmark evidence",
+            "release": strict_release,
         },
         "race_outcome_model_evidence": {
             "evidence_kind": evidence.get("evidence_kind"),
             "sealed_test_events": evidence.get("sealed_test_events"),
             "benchmark_run_id": evidence.get("benchmark_run_id"),
+            "source_provenance_sha256": evidence.get("source_provenance_sha256"),
         },
     }))
 
