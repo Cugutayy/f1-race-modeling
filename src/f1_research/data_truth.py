@@ -80,7 +80,11 @@ def _strict_timestamp_age(
 
 
 def _finite_positive_laps(row: dict[str, Any]) -> list[float]:
-    values = row.get("recent_laps_s") or []
+    values = (
+        row.get("pace_laps_s")
+        if "pace_laps_s" in row
+        else row.get("recent_laps_s")
+    ) or []
     output = []
     for value in values:
         try:
