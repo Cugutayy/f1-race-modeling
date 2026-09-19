@@ -111,6 +111,64 @@ def build_strict_regressor(spec: LapModelSpec) -> Pipeline:
         }
         defaults.update(params)
         model = ExtraTreesRegressor(**defaults)
+    elif spec.name == "xgboost":
+        try:
+            from xgboost import XGBRegressor
+        except ImportError as exc:
+            raise RuntimeError("Install the modern extra to evaluate XGBoost") from exc
+        defaults = {
+            "objective": "reg:absoluteerror",
+            "n_estimators": 500,
+            "learning_rate": 0.03,
+            "max_depth": 6,
+            "min_child_weight": 8.0,
+            "subsample": 0.85,
+            "colsample_bytree": 0.85,
+            "reg_lambda": 8.0,
+            "reg_alpha": 0.05,
+            "random_state": 42,
+            "n_jobs": -1,
+        }
+        defaults.update(params)
+        model = XGBRegressor(**defaults)
+    elif spec.name == "lightgbm":
+        try:
+            from lightgbm import LGBMRegressor
+        except ImportError as exc:
+            raise RuntimeError("Install the modern extra to evaluate LightGBM") from exc
+        defaults = {
+            "objective": "regression_l1",
+            "n_estimators": 500,
+            "learning_rate": 0.03,
+            "num_leaves": 31,
+            "min_child_samples": 25,
+            "subsample": 0.85,
+            "colsample_bytree": 0.85,
+            "reg_lambda": 8.0,
+            "reg_alpha": 0.05,
+            "random_state": 42,
+            "n_jobs": -1,
+            "verbosity": -1,
+        }
+        defaults.update(params)
+        model = LGBMRegressor(**defaults)
+    elif spec.name == "catboost":
+        try:
+            from catboost import CatBoostRegressor
+        except ImportError as exc:
+            raise RuntimeError("Install the modern extra to evaluate CatBoost") from exc
+        defaults = {
+            "loss_function": "MAE",
+            "iterations": 500,
+            "learning_rate": 0.03,
+            "depth": 7,
+            "l2_leaf_reg": 8.0,
+            "random_seed": 42,
+            "verbose": False,
+            "allow_writing_files": False,
+        }
+        defaults.update(params)
+        model = CatBoostRegressor(**defaults)
     elif spec.name == "tabicl_v2":
         try:
             from tabicl import TabICLRegressor
